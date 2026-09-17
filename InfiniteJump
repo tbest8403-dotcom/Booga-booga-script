@@ -1,0 +1,379 @@
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+
+local InfiniteJump = {}
+
+InfiniteJump.Config = {
+	Enabled = false,
+
+	Cooldown = 0.12,
+
+	-- Uses the character's normal JumpPower / JumpHeight.
+	UseNormalJumpStrength = true,
+
+	-- Used only if UseNormalJumpStrength = false.
+	JumpSpeed = 55,
+
+	-- Recover from falling/ragdoll-like Humanoid states.
+	AutoGetUp = true,
+}
+
+InfiniteJump._running = false
+InfiniteJump._connections = {}
+InfiniteJump._characterConnections = {}
+
+InfiniteJump._character = nil
+InfiniteJump._humanoid = nil
+InfiniteJump._rootPart = nil
+
+InfiniteJump._lastJump = 0
+
+--------------------------------------------------
+-- CONNECTION HELPERS
+--------------------------------------------------
+
+local function DisconnectList(List)
+	for _, Connection in ipairs(List) do
+		pcall(function()
+			if Connection.Connected then
+				Connection:Disconnect()
+			end
+		end)
+	end
+
+	table.clear(List)
+end
+
+function InfiniteJump:_Connect(
+	Signal,
+	Callback
+)
+	local Connection =
+		Signal:Connect(
+			Callback
+		)
+
+	table.insert(
+		self._connections,
+		Connection
+	)
+
+	return Connection
+end
+
+function InfiniteJump:_ConnectCharacter(
+	Signal,
+	Callback
+)
+	local Connection =
+		Signal:Connect(
+			Callback
+		)
+
+	table.insert(
+		self._characterConnections,
+		Connection
+	)
+
+	return Connection
+end
+
+--------------------------------------------------
+-- CHARACTER
+--------------------------------------------------
+
+function InfiniteJump:_DetachCharacter()
+	DisconnectList(
+		self._characterConnections
+	)
+
+	self._character = nil
+	self._humanoid = nil
+	self._rootPart = nil
+end
+
+function InfiniteJump:_AttachCharacter(
+	Character
+)
+	self:_DetachCharacter()
+
+	if not Character then
+		return
+	end
+
+	local Humanoid =
+		Character:WaitForChild(
+			"Humanoid"
+		)
+
+	local RootPart =
+		Character:WaitForChild(
+			"HumanoidRootPart"
+		)
+
+	self._character =
+		Character
+
+	self._humanoid =
+		Humanoid
+
+	self._rootPart =
+		RootPart
+end
+
+--------------------------------------------------
+-- JUMP SPEED
+--------------------------------------------------
+
+function InfiniteJump:GetJumpSpeed()
+	if not self.Config.UseNormalJumpStrength then
+		return self.Config.JumpSpeed
+	end
+
+	local Humanoid =
+		self._humanoid
+
+	if not Humanoid then
+		return 0
+	end
+
+	if Humanoid.UseJumpPower then
+		return Humanoid.JumpPower
+	end
+
+	return math.sqrt(
+		2
+			* Workspace.Gravity
+			* Humanoid.JumpHeight
+	)
+end
+
+--------------------------------------------------
+-- GET UP
+--------------------------------------------------
+
+function InfiniteJump:GetUp()
+	local Humanoid =
+		self._humanoid
+
+	if not Humanoid then
+		return
+	end
+
+	if Humanoid.Health <= 0 then
+		return
+	end
+
+	Humanoid.Sit = false
+	Humanoid.PlatformStand = false
+	Humanoid.AutoRotate = true
+
+	local State =
+		Humanoid:GetState()
+
+	if State
+			== Enum.HumanoidStateType.FallingDown
+
+		or State
+			== Enum.HumanoidStateType.Ragdoll
+
+		or State
+			== Enum.HumanoidStateType.Physics
+	then
+		Humanoid:ChangeState(
+			Enum.HumanoidStateType.GettingUp
+		)
+	end
+end
+
+--------------------------------------------------
+-- JUMP
+--------------------------------------------------
+
+function InfiniteJump:Jump()
+	if not self.Config.Enabled then
+		return
+	end
+
+	local Character =
+		self._character
+
+	local Humanoid =
+		self._humanoid
+
+	local RootPart =
+		self._rootPart
+
+	if not Character
+		or not Humanoid
+		or not RootPart
+	then
+		return
+	end
+
+	if Humanoid.Health <= 0 then
+		return
+	end
+
+	local Now =
+		os.clock()
+
+	if Now - self._lastJump
+		< self.Config.Cooldown
+	then
+		return
+	end
+
+	self._lastJump =
+		Now
+
+	--------------------------------------------------
+	-- RECOVER FIRST
+	--------------------------------------------------
+
+	if self.Config.AutoGetUp then
+		self:GetUp()
+	end
+
+	--------------------------------------------------
+	-- GET NORMAL JUMP SPEED
+	--------------------------------------------------
+
+	local JumpSpeed =
+		self:GetJumpSpeed()
+
+	if JumpSpeed <= 0 then
+		return
+	end
+
+	--------------------------------------------------
+	-- APPLY ONLY THE VERTICAL VELOCITY NEEDED
+	--------------------------------------------------
+
+	local CurrentVelocity =
+		RootPart.AssemblyLinearVelocity
+
+	local NeededVelocity =
+		JumpSpeed
+		- CurrentVelocity.Y
+
+	if NeededVelocity > 0 then
+		local Impulse =
+			Vector3.new(
+				0,
+				NeededVelocity
+					* RootPart.AssemblyMass,
+				0
+			)
+
+		RootPart:ApplyImpulse(
+			Impulse
+		)
+	end
+
+	--------------------------------------------------
+	-- FORCE JUMP STATE
+	--------------------------------------------------
+
+	Humanoid:ChangeState(
+		Enum.HumanoidStateType.Jumping
+	)
+end
+
+--------------------------------------------------
+-- CONFIG
+--------------------------------------------------
+
+function InfiniteJump:SetEnabled(
+	Enabled
+)
+	self.Config.Enabled =
+		Enabled == true
+end
+
+function InfiniteJump:SetAutoGetUp(
+	Enabled
+)
+	self.Config.AutoGetUp =
+		Enabled == true
+end
+
+function InfiniteJump:SetCooldown(
+	Value
+)
+	self.Config.Cooldown =
+		math.max(
+			0,
+			tonumber(Value)
+				or 0.12
+		)
+end
+
+--------------------------------------------------
+-- START
+--------------------------------------------------
+
+function InfiniteJump:Start()
+	if self._running then
+		return self
+	end
+
+	self._running = true
+
+	if LocalPlayer.Character then
+		self:_AttachCharacter(
+			LocalPlayer.Character
+		)
+	end
+
+	self:_Connect(
+		LocalPlayer.CharacterAdded,
+		function(Character)
+			self:_AttachCharacter(
+				Character
+			)
+		end
+	)
+
+	self:_Connect(
+		UserInputService.JumpRequest,
+		function()
+			self:Jump()
+		end
+	)
+
+	return self
+end
+
+--------------------------------------------------
+-- STOP
+--------------------------------------------------
+
+function InfiniteJump:Stop()
+	if not self._running then
+		return
+	end
+
+	self._running = false
+
+	self.Config.Enabled = false
+
+	self:_DetachCharacter()
+
+	DisconnectList(
+		self._connections
+	)
+end
+
+--------------------------------------------------
+-- DESTROY
+--------------------------------------------------
+
+function InfiniteJump:Destroy()
+	self:Stop()
+end
+
+return InfiniteJump
