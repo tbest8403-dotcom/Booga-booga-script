@@ -1,148 +1,1625 @@
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
 
-local UILibrary = require(
-	ReplicatedStorage:WaitForChild("UILibrary")
-)
+local LocalPlayer = Players.LocalPlayer
 
-local Window = UILibrary:CreateWindow({
-	Title = "Game Helper",
-	Size = Vector2.new(560, 580),
-	ReopenText = "Open UI",
-})
+local UILibrary = {}
+UILibrary.__index = UILibrary
 
---------------------------------------------------
--- MAIN TAB
---------------------------------------------------
-
-local MainTab = Window:CreateTab("Main")
-
-local Automation =
-	MainTab:CreateSection("Automation")
-
-Automation:AddToggle({
-	Name = "Auto Harvest",
-	Default = false,
-
-	Callback = function(Value)
-		print("Auto Harvest:", Value)
-	end,
-})
-
-Automation:AddSlider({
-	Name = "Harvest Range",
-
-	Min = 1,
-	Max = 25,
-	Default = 20,
-	Increment = 1,
-
-	Callback = function(Value)
-		print("Range:", Value)
-	end,
-})
-
-Automation:AddButton({
-	Name = "Collect Nearby",
-
-	Callback = function()
-		print("Collect")
-	end,
-})
+UILibrary.CustomWidgets = {}
 
 --------------------------------------------------
--- FILTER
+-- THEME
 --------------------------------------------------
 
-local Filter =
-	MainTab:CreateSection("Pickup Filter")
+UILibrary.Theme = {
+	Background = Color3.fromRGB(18, 18, 18),
+	Background2 = Color3.fromRGB(24, 24, 24),
+	Background3 = Color3.fromRGB(31, 31, 31),
 
-Filter:AddTextbox({
-	Name = "Search",
-	Placeholder = "Search item or type...",
+	Button = Color3.fromRGB(38, 38, 38),
+	ButtonHover = Color3.fromRGB(46, 46, 46),
 
-	LiveCallback = function(Text)
-		print("Searching:", Text)
-	end,
-})
+	Stroke = Color3.fromRGB(55, 55, 55),
 
-Filter:AddDropdown({
-	Name = "Item Type",
+	Text = Color3.fromRGB(245, 245, 245),
+	SubText = Color3.fromRGB(165, 165, 165),
+	DisabledText = Color3.fromRGB(100, 100, 100),
 
-	Values = {
-		"food",
-		"tool",
-		"armor",
-		"object",
-	},
+	Accent = Color3.fromRGB(85, 85, 85),
 
-	Callback = function(Value)
-		print("Selected type:", Value)
-	end,
-})
+	Corner = 8,
+}
 
 --------------------------------------------------
--- TARGET TAB
+-- HELPERS
 --------------------------------------------------
 
-local TargetTab =
-	Window:CreateTab("Target")
+local function Create(ClassName, Properties, Parent)
+	local Object = Instance.new(ClassName)
 
-local TargetSection =
-	TargetTab:CreateTargetSection({
-		Name = "Target",
+	for Property, Value in pairs(Properties or {}) do
+		Object[Property] = Value
+	end
 
-		Callback = function(Player)
-			if Player then
-				print(
-					"Target:",
-					Player.Name
+	if Parent then
+		Object.Parent = Parent
+	end
+
+	return Object
+end
+
+local function AddCorner(Object, Radius)
+	return Create("UICorner", {
+		CornerRadius = UDim.new(0, Radius or UILibrary.Theme.Corner),
+	}, Object)
+end
+
+local function AddStroke(Object, Color, Thickness)
+	return Create("UIStroke", {
+		Color = Color or UILibrary.Theme.Stroke,
+		Thickness = Thickness or 1,
+	}, Object)
+end
+
+local function AddPadding(Object, Left, Right, Top, Bottom)
+	return Create("UIPadding", {
+		PaddingLeft = UDim.new(0, Left or 0),
+		PaddingRight = UDim.new(0, Right or 0),
+		PaddingTop = UDim.new(0, Top or 0),
+		PaddingBottom = UDim.new(0, Bottom or 0),
+	}, Object)
+end
+
+local function SafeCallback(Callback, ...)
+	if not Callback then
+		return
+	end
+
+	local Success, Error = pcall(Callback, ...)
+
+	if not Success then
+		warn("[UILibrary Callback Error]", Error)
+	end
+end
+
+local function Clamp(Number, Minimum, Maximum)
+	return math.max(Minimum, math.min(Maximum, Number))
+end
+
+local function RoundToIncrement(Number, Increment)
+	if not Increment or Increment <= 0 then
+		return Number
+	end
+
+	return math.floor((Number / Increment) + 0.5) * Increment
+end
+
+local function FormatNumber(Number)
+	if math.abs(Number - math.floor(Number)) < 0.0001 then
+		return tostring(math.floor(Number))
+	end
+
+	return string.format("%.2f", Number)
+end
+
+local function Tween(Object, Time, Properties)
+	local TweenObject = TweenService:Create(
+		Object,
+		TweenInfo.new(
+			Time or 0.12,
+			Enum.EasingStyle.Quad,
+			Enum.EasingDirection.Out
+		),
+		Properties
+	)
+
+	TweenObject:Play()
+
+	return TweenObject
+end
+
+--------------------------------------------------
+-- CUSTOM WIDGET API
+--------------------------------------------------
+
+function UILibrary:RegisterWidget(Name, Constructor)
+	assert(type(Name) == "string", "Widget name must be a string")
+	assert(type(Constructor) == "function", "Widget constructor must be a function")
+
+	self.CustomWidgets[Name] = Constructor
+end
+
+--------------------------------------------------
+-- WINDOW
+--------------------------------------------------
+
+function UILibrary:CreateWindow(Options)
+	Options = Options or {}
+
+	local Window = {}
+
+	Window.Library = self
+	Window.Title = Options.Title or "UI Library"
+	Window.Size = Options.Size or Vector2.new(560, 580)
+	Window.Visible = true
+	Window.Tabs = {}
+	Window.Connections = {}
+	Window.Destroyed = false
+	Window.ActiveTab = nil
+
+	local Parent = Options.Parent
+
+	if not Parent then
+		Parent = LocalPlayer:WaitForChild("PlayerGui")
+	end
+
+	--------------------------------------------------
+	-- SCREEN GUI
+	--------------------------------------------------
+
+	local ScreenGui = Create("ScreenGui", {
+		Name = Options.GuiName or "CustomUILibrary",
+		ResetOnSpawn = false,
+		IgnoreGuiInset = false,
+		ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+	}, Parent)
+
+	Window.Gui = ScreenGui
+
+	--------------------------------------------------
+	-- REOPEN BUTTON
+	--------------------------------------------------
+
+	local ReopenButton = Create("TextButton", {
+		Name = "Reopen",
+		Size = UDim2.fromOffset(110, 32),
+		Position = UDim2.new(0.5, 0, 0, 8),
+		AnchorPoint = Vector2.new(0.5, 0),
+
+		BackgroundColor3 = self.Theme.Background2,
+		BorderSizePixel = 0,
+
+		Text = Options.ReopenText or "Open UI",
+		TextColor3 = self.Theme.Text,
+		TextSize = 12,
+		Font = Enum.Font.GothamBold,
+
+		Visible = false,
+
+		AutoButtonColor = false,
+	}, ScreenGui)
+
+	AddCorner(ReopenButton, 8)
+	AddStroke(ReopenButton)
+
+	--------------------------------------------------
+	-- MAIN
+	--------------------------------------------------
+
+	local Main = Create("Frame", {
+		Name = "Main",
+
+		Size = UDim2.fromOffset(
+			Window.Size.X,
+			Window.Size.Y
+		),
+
+		Position = Options.Position or UDim2.new(
+			0.5,
+			-Math.floor and 0 or -Window.Size.X / 2,
+			0.5,
+			-Window.Size.Y / 2
+		),
+
+		AnchorPoint = Options.Position and Vector2.zero or Vector2.new(0, 0),
+
+		BackgroundColor3 = self.Theme.Background,
+		BorderSizePixel = 0,
+
+		ClipsDescendants = true,
+		Active = true,
+	}, ScreenGui)
+
+	-- Correct default centered positioning
+	if not Options.Position then
+		Main.AnchorPoint = Vector2.new(0.5, 0.5)
+		Main.Position = UDim2.fromScale(0.5, 0.5)
+	end
+
+	Window.Main = Main
+
+	AddCorner(Main, 12)
+	AddStroke(Main)
+
+	--------------------------------------------------
+	-- RESPONSIVE SCALE
+	--------------------------------------------------
+
+	local UIScale = Create("UIScale", {
+		Scale = 1,
+	}, Main)
+
+	local function UpdateScale()
+		local Camera = workspace.CurrentCamera
+
+		if not Camera then
+			return
+		end
+
+		local Viewport = Camera.ViewportSize
+
+		local ScaleX = Viewport.X / (Window.Size.X + 40)
+		local ScaleY = Viewport.Y / (Window.Size.Y + 40)
+
+		UIScale.Scale = Clamp(
+			math.min(ScaleX, ScaleY, 1),
+			0.65,
+			1
+		)
+	end
+
+	UpdateScale()
+
+	table.insert(
+		Window.Connections,
+		workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(UpdateScale)
+	)
+
+	if workspace.CurrentCamera then
+		table.insert(
+			Window.Connections,
+			workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(UpdateScale)
+		)
+	end
+
+	--------------------------------------------------
+	-- TITLE BAR
+	--------------------------------------------------
+
+	local TitleBar = Create("Frame", {
+		Name = "TitleBar",
+
+		Size = UDim2.new(1, 0, 0, 44),
+
+		BackgroundColor3 = self.Theme.Background2,
+		BorderSizePixel = 0,
+
+		Active = true,
+	}, Main)
+
+	local Title = Create("TextLabel", {
+		Size = UDim2.new(1, -55, 1, 0),
+		Position = UDim2.fromOffset(14, 0),
+
+		BackgroundTransparency = 1,
+
+		Text = Window.Title,
+		TextColor3 = self.Theme.Text,
+		TextSize = 15,
+		Font = Enum.Font.GothamBold,
+
+		TextXAlignment = Enum.TextXAlignment.Left,
+	}, TitleBar)
+
+	local CloseButton = Create("TextButton", {
+		Size = UDim2.fromOffset(32, 32),
+		Position = UDim2.new(1, -38, 0, 6),
+
+		BackgroundColor3 = self.Theme.Button,
+		BorderSizePixel = 0,
+
+		Text = "X",
+		TextColor3 = self.Theme.Text,
+		TextSize = 12,
+		Font = Enum.Font.GothamBold,
+
+		AutoButtonColor = false,
+	}, TitleBar)
+
+	AddCorner(CloseButton, 8)
+
+	--------------------------------------------------
+	-- DRAGGING
+	--------------------------------------------------
+
+	local Dragging = false
+	local DragStart = nil
+	local StartPosition = nil
+	local DragInput = nil
+
+	local function UpdateDrag(Input)
+		if not Dragging then
+			return
+		end
+
+		local Delta = Input.Position - DragStart
+
+		Main.Position = UDim2.new(
+			StartPosition.X.Scale,
+			StartPosition.X.Offset + Delta.X,
+			StartPosition.Y.Scale,
+			StartPosition.Y.Offset + Delta.Y
+		)
+	end
+
+	table.insert(
+		Window.Connections,
+		TitleBar.InputBegan:Connect(function(Input)
+			if Input.UserInputType == Enum.UserInputType.MouseButton1
+				or Input.UserInputType == Enum.UserInputType.Touch
+			then
+				Dragging = true
+				DragStart = Input.Position
+				StartPosition = Main.Position
+				DragInput = Input
+			end
+		end)
+	)
+
+	table.insert(
+		Window.Connections,
+		UserInputService.InputChanged:Connect(function(Input)
+			if not Dragging then
+				return
+			end
+
+			if Input.UserInputType == Enum.UserInputType.MouseMovement
+				or Input.UserInputType == Enum.UserInputType.Touch
+			then
+				UpdateDrag(Input)
+			end
+		end)
+	)
+
+	table.insert(
+		Window.Connections,
+		UserInputService.InputEnded:Connect(function(Input)
+			if Input == DragInput
+				or Input.UserInputType == Enum.UserInputType.MouseButton1
+			then
+				Dragging = false
+				DragInput = nil
+			end
+		end)
+	)
+
+	--------------------------------------------------
+	-- TAB BAR
+	--------------------------------------------------
+
+	local TabBar = Create("ScrollingFrame", {
+		Name = "TabBar",
+
+		Size = UDim2.new(1, -16, 0, 38),
+		Position = UDim2.fromOffset(8, 48),
+
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+
+		ScrollBarThickness = 0,
+		ScrollingDirection = Enum.ScrollingDirection.X,
+
+		AutomaticCanvasSize = Enum.AutomaticSize.X,
+		CanvasSize = UDim2.new(),
+
+		ClipsDescendants = true,
+	}, Main)
+
+	AddPadding(TabBar, 0, 0, 0, 0)
+
+	local TabLayout = Create("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		Padding = UDim.new(0, 6),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+	}, TabBar)
+
+	--------------------------------------------------
+	-- PAGE CONTAINER
+	--------------------------------------------------
+
+	local PageContainer = Create("Frame", {
+		Name = "Pages",
+
+		Size = UDim2.new(1, -16, 1, -96),
+		Position = UDim2.fromOffset(8, 90),
+
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+
+		ClipsDescendants = true,
+	}, Main)
+
+	Window.PageContainer = PageContainer
+	Window.TabBar = TabBar
+
+	--------------------------------------------------
+	-- WINDOW FUNCTIONS
+	--------------------------------------------------
+
+	function Window:SetTitle(NewTitle)
+		self.Title = tostring(NewTitle)
+		Title.Text = self.Title
+	end
+
+	function Window:SetVisible(Visible)
+		self.Visible = Visible == true
+
+		Main.Visible = self.Visible
+		ReopenButton.Visible = not self.Visible
+	end
+
+	function Window:Toggle()
+		self:SetVisible(not self.Visible)
+	end
+
+	function Window:SetPosition(Position)
+		Main.Position = Position
+	end
+
+	function Window:GetPosition()
+		return Main.Position
+	end
+
+	function Window:Destroy()
+		if self.Destroyed then
+			return
+		end
+
+		self.Destroyed = true
+
+		for _, Connection in ipairs(self.Connections) do
+			pcall(function()
+				Connection:Disconnect()
+			end)
+		end
+
+		table.clear(self.Connections)
+
+		ScreenGui:Destroy()
+	end
+
+	CloseButton.MouseButton1Click:Connect(function()
+		Window:SetVisible(false)
+	end)
+
+	ReopenButton.MouseButton1Click:Connect(function()
+		Window:SetVisible(true)
+	end)
+
+	CloseButton.MouseEnter:Connect(function()
+		Tween(
+			CloseButton,
+			0.1,
+			{
+				BackgroundColor3 = self.Theme.ButtonHover,
+			}
+		)
+	end)
+
+	CloseButton.MouseLeave:Connect(function()
+		Tween(
+			CloseButton,
+			0.1,
+			{
+				BackgroundColor3 = self.Theme.Button,
+			}
+		)
+	end)
+
+	--------------------------------------------------
+	-- CREATE TAB
+	--------------------------------------------------
+
+	function Window:CreateTab(Name)
+		local Tab = {}
+
+		Tab.Window = self
+		Tab.Name = tostring(Name or "Tab")
+		Tab.Sections = {}
+
+		local Button = Create("TextButton", {
+			Size = UDim2.fromOffset(
+				math.max(80, (#Tab.Name * 7) + 28),
+				34
+			),
+
+			BackgroundColor3 = UILibrary.Theme.Background3,
+			BorderSizePixel = 0,
+
+			Text = Tab.Name,
+			TextColor3 = UILibrary.Theme.SubText,
+			TextSize = 12,
+			Font = Enum.Font.GothamBold,
+
+			AutoButtonColor = false,
+		}, TabBar)
+
+		AddCorner(Button, 7)
+
+		local Page = Create("ScrollingFrame", {
+			Name = Tab.Name,
+
+			Size = UDim2.fromScale(1, 1),
+
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+
+			ScrollBarThickness = 4,
+			ScrollBarImageColor3 = UILibrary.Theme.Stroke,
+
+			AutomaticCanvasSize = Enum.AutomaticSize.Y,
+			CanvasSize = UDim2.new(),
+
+			Visible = false,
+		}, PageContainer)
+
+		AddPadding(Page, 2, 6, 2, 10)
+
+		local PageLayout = Create("UIListLayout", {
+			Padding = UDim.new(0, 10),
+			SortOrder = Enum.SortOrder.LayoutOrder,
+		}, Page)
+
+		Tab.Button = Button
+		Tab.Page = Page
+
+		table.insert(self.Tabs, Tab)
+
+		function Tab:Select()
+			for _, OtherTab in ipairs(self.Window.Tabs) do
+				local Active = OtherTab == self
+
+				OtherTab.Page.Visible = Active
+
+				OtherTab.Button.TextColor3 = Active
+					and UILibrary.Theme.Text
+					or UILibrary.Theme.SubText
+
+				Tween(
+					OtherTab.Button,
+					0.1,
+					{
+						BackgroundColor3 = Active
+							and UILibrary.Theme.ButtonHover
+							or UILibrary.Theme.Background3,
+					}
 				)
 			end
-		end,
-	})
 
-TargetSection:AddToggle({
-	Name = "Auto Target",
+			self.Window.ActiveTab = self
+		end
 
-	Callback = function(Value)
-		print("Auto Target:", Value)
-	end,
-})
+		Button.MouseButton1Click:Connect(function()
+			Tab:Select()
+		end)
 
-TargetSection:AddSlider({
-	Name = "Target Range",
+		--------------------------------------------------
+		-- CREATE SECTION
+		--------------------------------------------------
 
-	Min = 10,
-	Max = 500,
-	Default = 100,
+		function Tab:CreateSection(SectionName)
+			local Section = {}
 
-	Callback = function(Value)
-		print("Target range:", Value)
-	end,
-})
+			Section.Tab = self
+			Section.Window = self.Window
+			Section.Library = UILibrary
+			Section.Name = tostring(SectionName or "Section")
 
---------------------------------------------------
--- SETTINGS
---------------------------------------------------
+			local Frame = Create("Frame", {
+				Size = UDim2.new(1, -4, 0, 0),
 
-local Settings =
-	Window:CreateTab("Settings")
+				BackgroundColor3 = UILibrary.Theme.Background2,
+				BorderSizePixel = 0,
 
-local UI =
-	Settings:CreateSection("UI")
+				AutomaticSize = Enum.AutomaticSize.Y,
+			}, Page)
 
-UI:AddButton({
-	Name = "Hide Window",
+			AddCorner(Frame, 9)
+			AddStroke(Frame)
 
-	Callback = function()
-		Window:SetVisible(false)
-	end,
-})
+			AddPadding(
+				Frame,
+				10,
+				10,
+				10,
+				10
+			)
 
-UI:AddButton({
-	Name = "Destroy UI",
+			local Header = Create("TextLabel", {
+				Size = UDim2.new(1, 0, 0, 22),
 
-	Callback = function()
-		Window:Destroy()
-	end,
-})
+				BackgroundTransparency = 1,
+
+				Text = Section.Name,
+				TextColor3 = UILibrary.Theme.Text,
+				TextSize = 12,
+				Font = Enum.Font.GothamBold,
+
+				TextXAlignment = Enum.TextXAlignment.Left,
+			}, Frame)
+
+			local Content = Create("Frame", {
+				Size = UDim2.new(1, 0, 0, 0),
+
+				BackgroundTransparency = 1,
+
+				AutomaticSize = Enum.AutomaticSize.Y,
+			}, Frame)
+
+			local Layout = Create("UIListLayout", {
+				Padding = UDim.new(0, 6),
+				SortOrder = Enum.SortOrder.LayoutOrder,
+			}, Content)
+
+			Section.Frame = Frame
+			Section.Content = Content
+
+			table.insert(self.Sections, Section)
+
+			--------------------------------------------------
+			-- LABEL
+			--------------------------------------------------
+
+			function Section:AddLabel(Options)
+				if type(Options) == "string" then
+					Options = {
+						Text = Options,
+					}
+				end
+
+				Options = Options or {}
+
+				local Label = Create("TextLabel", {
+					Size = UDim2.new(1, 0, 0, Options.Height or 26),
+
+					BackgroundTransparency = 1,
+
+					Text = tostring(Options.Text or "Label"),
+					TextColor3 = Options.Color or UILibrary.Theme.SubText,
+					TextSize = Options.TextSize or 12,
+					Font = Options.Font or Enum.Font.Gotham,
+
+					TextWrapped = true,
+					TextXAlignment = Options.Alignment or Enum.TextXAlignment.Left,
+				}, Content)
+
+				local Controller = {}
+
+				function Controller:SetText(Text)
+					Label.Text = tostring(Text)
+				end
+
+				function Controller:SetColor(Color)
+					Label.TextColor3 = Color
+				end
+
+				function Controller:SetVisible(Visible)
+					Label.Visible = Visible
+				end
+
+				Controller.Instance = Label
+
+				return Controller
+			end
+
+			--------------------------------------------------
+			-- DIVIDER
+			--------------------------------------------------
+
+			function Section:AddDivider()
+				local Divider = Create("Frame", {
+					Size = UDim2.new(1, 0, 0, 1),
+
+					BackgroundColor3 = UILibrary.Theme.Stroke,
+					BorderSizePixel = 0,
+				}, Content)
+
+				return Divider
+			end
+
+			--------------------------------------------------
+			-- BUTTON
+			--------------------------------------------------
+
+			function Section:AddButton(Options)
+				if type(Options) == "string" then
+					Options = {
+						Name = Options,
+					}
+				end
+
+				Options = Options or {}
+
+				local Button = Create("TextButton", {
+					Size = UDim2.new(1, 0, 0, Options.Height or 38),
+
+					BackgroundColor3 = UILibrary.Theme.Button,
+					BorderSizePixel = 0,
+
+					Text = tostring(Options.Name or "Button"),
+					TextColor3 = UILibrary.Theme.Text,
+					TextSize = 12,
+					Font = Enum.Font.GothamBold,
+
+					AutoButtonColor = false,
+				}, Content)
+
+				AddCorner(Button, 7)
+
+				Button.MouseEnter:Connect(function()
+					Tween(
+						Button,
+						0.1,
+						{
+							BackgroundColor3 = UILibrary.Theme.ButtonHover,
+						}
+					)
+				end)
+
+				Button.MouseLeave:Connect(function()
+					Tween(
+						Button,
+						0.1,
+						{
+							BackgroundColor3 = UILibrary.Theme.Button,
+						}
+					)
+				end)
+
+				Button.MouseButton1Click:Connect(function()
+					SafeCallback(Options.Callback)
+				end)
+
+				local Controller = {}
+
+				function Controller:SetText(Text)
+					Button.Text = tostring(Text)
+				end
+
+				function Controller:SetEnabled(Enabled)
+					Button.Active = Enabled
+
+					Button.TextColor3 = Enabled
+						and UILibrary.Theme.Text
+						or UILibrary.Theme.DisabledText
+				end
+
+				Controller.Instance = Button
+
+				return Controller
+			end
+
+			--------------------------------------------------
+			-- TOGGLE
+			--------------------------------------------------
+
+			function Section:AddToggle(Options)
+				Options = Options or {}
+
+				local Value = Options.Default == true
+
+				local Row = Create("TextButton", {
+					Size = UDim2.new(1, 0, 0, 38),
+
+					BackgroundColor3 = UILibrary.Theme.Background3,
+					BorderSizePixel = 0,
+
+					Text = "",
+
+					AutoButtonColor = false,
+				}, Content)
+
+				AddCorner(Row, 7)
+
+				local Label = Create("TextLabel", {
+					Size = UDim2.new(1, -80, 1, 0),
+					Position = UDim2.fromOffset(10, 0),
+
+					BackgroundTransparency = 1,
+
+					Text = tostring(Options.Name or "Toggle"),
+					TextColor3 = UILibrary.Theme.Text,
+					TextSize = 12,
+					Font = Enum.Font.Gotham,
+
+					TextXAlignment = Enum.TextXAlignment.Left,
+				}, Row)
+
+				local StateButton = Create("TextLabel", {
+					Size = UDim2.fromOffset(54, 26),
+					Position = UDim2.new(1, -62, 0.5, -13),
+
+					BackgroundColor3 = UILibrary.Theme.Button,
+					BorderSizePixel = 0,
+
+					Text = "",
+					TextColor3 = UILibrary.Theme.Text,
+					TextSize = 10,
+					Font = Enum.Font.GothamBold,
+				}, Row)
+
+				AddCorner(StateButton, 7)
+
+				local function Update()
+					StateButton.Text = Value and "ON" or "OFF"
+
+					StateButton.BackgroundColor3 = Value
+						and UILibrary.Theme.Accent
+						or UILibrary.Theme.Button
+				end
+
+				local Controller = {}
+
+				function Controller:Set(NewValue, FireCallback)
+					Value = NewValue == true
+
+					Update()
+
+					if FireCallback ~= false then
+						SafeCallback(
+							Options.Callback,
+							Value
+						)
+					end
+				end
+
+				function Controller:Get()
+					return Value
+				end
+
+				Row.MouseButton1Click:Connect(function()
+					Controller:Set(not Value)
+				end)
+
+				Update()
+
+				if Options.FireOnLoad then
+					SafeCallback(
+						Options.Callback,
+						Value
+					)
+				end
+
+				Controller.Instance = Row
+
+				return Controller
+			end
+
+			--------------------------------------------------
+			-- TEXTBOX
+			--------------------------------------------------
+
+			function Section:AddTextbox(Options)
+				Options = Options or {}
+
+				local Row = Create("Frame", {
+					Size = UDim2.new(1, 0, 0, 66),
+
+					BackgroundColor3 = UILibrary.Theme.Background3,
+					BorderSizePixel = 0,
+				}, Content)
+
+				AddCorner(Row, 7)
+
+				local Label = Create("TextLabel", {
+					Size = UDim2.new(1, -20, 0, 24),
+					Position = UDim2.fromOffset(10, 4),
+
+					BackgroundTransparency = 1,
+
+					Text = tostring(Options.Name or "Textbox"),
+					TextColor3 = UILibrary.Theme.SubText,
+					TextSize = 11,
+					Font = Enum.Font.Gotham,
+
+					TextXAlignment = Enum.TextXAlignment.Left,
+				}, Row)
+
+				local Box = Create("TextBox", {
+					Size = UDim2.new(1, -20, 0, 30),
+					Position = UDim2.fromOffset(10, 30),
+
+					BackgroundColor3 = UILibrary.Theme.Button,
+					BorderSizePixel = 0,
+
+					Text = tostring(Options.Default or ""),
+					PlaceholderText = tostring(Options.Placeholder or "Type here..."),
+
+					TextColor3 = UILibrary.Theme.Text,
+					PlaceholderColor3 = UILibrary.Theme.DisabledText,
+
+					TextSize = 12,
+					Font = Enum.Font.Gotham,
+
+					ClearTextOnFocus = Options.ClearOnFocus == true,
+
+					TextXAlignment = Enum.TextXAlignment.Left,
+				}, Row)
+
+				AddCorner(Box, 6)
+				AddPadding(Box, 8, 8, 0, 0)
+
+				local Controller = {}
+
+				function Controller:Set(Text)
+					Box.Text = tostring(Text)
+				end
+
+				function Controller:Get()
+					return Box.Text
+				end
+
+				Box.FocusLost:Connect(function(EnterPressed)
+					SafeCallback(
+						Options.Callback,
+						Box.Text,
+						EnterPressed
+					)
+				end)
+
+				if Options.LiveCallback then
+					Box:GetPropertyChangedSignal("Text"):Connect(function()
+						SafeCallback(
+							Options.LiveCallback,
+							Box.Text
+						)
+					end)
+				end
+
+				Controller.Instance = Row
+				Controller.Textbox = Box
+
+				return Controller
+			end
+
+			--------------------------------------------------
+			-- SLIDER
+			--------------------------------------------------
+
+			function Section:AddSlider(Options)
+				Options = Options or {}
+
+				local Minimum = Options.Min or 0
+				local Maximum = Options.Max or 100
+				local Increment = Options.Increment or 1
+
+				local Value = Clamp(
+					Options.Default or Minimum,
+					Minimum,
+					Maximum
+				)
+
+				Value = RoundToIncrement(
+					Value,
+					Increment
+				)
+
+				local Row = Create("Frame", {
+					Size = UDim2.new(1, 0, 0, 64),
+
+					BackgroundColor3 = UILibrary.Theme.Background3,
+					BorderSizePixel = 0,
+				}, Content)
+
+				AddCorner(Row, 7)
+
+				local Label = Create("TextLabel", {
+					Size = UDim2.new(1, -80, 0, 28),
+					Position = UDim2.fromOffset(10, 2),
+
+					BackgroundTransparency = 1,
+
+					Text = tostring(Options.Name or "Slider"),
+					TextColor3 = UILibrary.Theme.Text,
+					TextSize = 12,
+					Font = Enum.Font.Gotham,
+
+					TextXAlignment = Enum.TextXAlignment.Left,
+				}, Row)
+
+				local ValueLabel = Create("TextLabel", {
+					Size = UDim2.fromOffset(65, 28),
+					Position = UDim2.new(1, -75, 0, 2),
+
+					BackgroundTransparency = 1,
+
+					Text = "",
+					TextColor3 = UILibrary.Theme.SubText,
+					TextSize = 11,
+					Font = Enum.Font.GothamBold,
+
+					TextXAlignment = Enum.TextXAlignment.Right,
+				}, Row)
+
+				local Track = Create("Frame", {
+					Size = UDim2.new(1, -20, 0, 8),
+					Position = UDim2.fromOffset(10, 42),
+
+					BackgroundColor3 = UILibrary.Theme.Button,
+					BorderSizePixel = 0,
+
+					Active = true,
+				}, Row)
+
+				AddCorner(Track, 4)
+
+				local Fill = Create("Frame", {
+					Size = UDim2.fromScale(0, 1),
+
+					BackgroundColor3 = UILibrary.Theme.Accent,
+					BorderSizePixel = 0,
+				}, Track)
+
+				AddCorner(Fill, 4)
+
+				local DraggingSlider = false
+
+				local Controller = {}
+
+				local function UpdateVisual()
+					local Alpha = 0
+
+					if Maximum ~= Minimum then
+						Alpha =
+							(Value - Minimum)
+							/ (Maximum - Minimum)
+					end
+
+					Fill.Size = UDim2.fromScale(
+						Clamp(Alpha, 0, 1),
+						1
+					)
+
+					ValueLabel.Text = FormatNumber(Value)
+				end
+
+				function Controller:Set(NewValue, FireCallback)
+					NewValue = tonumber(NewValue) or Minimum
+
+					NewValue = Clamp(
+						NewValue,
+						Minimum,
+						Maximum
+					)
+
+					NewValue = RoundToIncrement(
+						NewValue,
+						Increment
+					)
+
+					Value = NewValue
+
+					UpdateVisual()
+
+					if FireCallback ~= false then
+						SafeCallback(
+							Options.Callback,
+							Value
+						)
+					end
+				end
+
+				function Controller:Get()
+					return Value
+				end
+
+				local function UpdateFromInput(Input)
+					local Width = Track.AbsoluteSize.X
+
+					if Width <= 0 then
+						return
+					end
+
+					local Alpha =
+						(Input.Position.X - Track.AbsolutePosition.X)
+						/ Width
+
+					Alpha = Clamp(
+						Alpha,
+						0,
+						1
+					)
+
+					Controller:Set(
+						Minimum
+						+ ((Maximum - Minimum) * Alpha)
+					)
+				end
+
+				Track.InputBegan:Connect(function(Input)
+					if Input.UserInputType == Enum.UserInputType.MouseButton1
+						or Input.UserInputType == Enum.UserInputType.Touch
+					then
+						DraggingSlider = true
+
+						UpdateFromInput(Input)
+					end
+				end)
+
+				UserInputService.InputChanged:Connect(function(Input)
+					if not DraggingSlider then
+						return
+					end
+
+					if Input.UserInputType == Enum.UserInputType.MouseMovement
+						or Input.UserInputType == Enum.UserInputType.Touch
+					then
+						UpdateFromInput(Input)
+					end
+				end)
+
+				UserInputService.InputEnded:Connect(function(Input)
+					if Input.UserInputType == Enum.UserInputType.MouseButton1
+						or Input.UserInputType == Enum.UserInputType.Touch
+					then
+						DraggingSlider = false
+					end
+				end)
+
+				UpdateVisual()
+
+				if Options.FireOnLoad then
+					SafeCallback(
+						Options.Callback,
+						Value
+					)
+				end
+
+				Controller.Instance = Row
+
+				return Controller
+			end
+
+			--------------------------------------------------
+			-- DROPDOWN
+			--------------------------------------------------
+
+			function Section:AddDropdown(Options)
+				Options = Options or {}
+
+				local Values = Options.Values or {}
+				local Current = Options.Default
+				local Open = false
+
+				local Control = Create("Frame", {
+					Size = UDim2.new(1, 0, 0, 66),
+
+					BackgroundColor3 = UILibrary.Theme.Background3,
+					BorderSizePixel = 0,
+
+					ClipsDescendants = true,
+				}, Content)
+
+				AddCorner(Control, 7)
+
+				local Label = Create("TextLabel", {
+					Size = UDim2.new(1, -20, 0, 24),
+					Position = UDim2.fromOffset(10, 4),
+
+					BackgroundTransparency = 1,
+
+					Text = tostring(Options.Name or "Dropdown"),
+					TextColor3 = UILibrary.Theme.SubText,
+					TextSize = 11,
+					Font = Enum.Font.Gotham,
+
+					TextXAlignment = Enum.TextXAlignment.Left,
+				}, Control)
+
+				local Selection = Create("TextButton", {
+					Size = UDim2.new(1, -20, 0, 30),
+					Position = UDim2.fromOffset(10, 30),
+
+					BackgroundColor3 = UILibrary.Theme.Button,
+					BorderSizePixel = 0,
+
+					Text = "",
+					TextColor3 = UILibrary.Theme.Text,
+					TextSize = 12,
+					Font = Enum.Font.Gotham,
+
+					AutoButtonColor = false,
+
+					TextXAlignment = Enum.TextXAlignment.Left,
+				}, Control)
+
+				AddCorner(Selection, 6)
+				AddPadding(Selection, 8, 8, 0, 0)
+
+				local OptionsFrame = Create("ScrollingFrame", {
+					Size = UDim2.new(1, -20, 0, 0),
+					Position = UDim2.fromOffset(10, 64),
+
+					BackgroundColor3 = UILibrary.Theme.Background2,
+					BorderSizePixel = 0,
+
+					ScrollBarThickness = 3,
+
+					CanvasSize = UDim2.new(),
+					AutomaticCanvasSize = Enum.AutomaticSize.Y,
+
+					Visible = false,
+				}, Control)
+
+				AddCorner(OptionsFrame, 6)
+				AddPadding(OptionsFrame, 4, 4, 4, 4)
+
+				local OptionsLayout = Create("UIListLayout", {
+					Padding = UDim.new(0, 3),
+				}, OptionsFrame)
+
+				local Controller = {}
+
+				local function UpdateText()
+					Selection.Text = Current ~= nil
+						and tostring(Current)
+						or tostring(Options.Placeholder or "Select...")
+				end
+
+				local function SetOpen(NewState)
+					Open = NewState
+
+					OptionsFrame.Visible = Open
+
+					if Open then
+						local Count = #Values
+
+						local Height = math.min(
+							(Count * 31) + 8,
+							170
+						)
+
+						OptionsFrame.Size =
+							UDim2.new(
+								1,
+								-20,
+								0,
+								Height
+							)
+
+						Control.Size =
+							UDim2.new(
+								1,
+								0,
+								0,
+								68 + Height
+							)
+					else
+						OptionsFrame.Size =
+							UDim2.new(
+								1,
+								-20,
+								0,
+								0
+							)
+
+						Control.Size =
+							UDim2.new(
+								1,
+								0,
+								0,
+								66
+							)
+					end
+				end
+
+				local function Rebuild()
+					for _, Child in ipairs(
+						OptionsFrame:GetChildren()
+					) do
+						if Child:IsA("TextButton") then
+							Child:Destroy()
+						end
+					end
+
+					for _, DropdownValue in ipairs(Values) do
+						local ValueCopy = DropdownValue
+
+						local OptionButton = Create("TextButton", {
+							Size = UDim2.new(1, 0, 0, 28),
+
+							BackgroundColor3 = UILibrary.Theme.Button,
+							BorderSizePixel = 0,
+
+							Text = tostring(ValueCopy),
+							TextColor3 = UILibrary.Theme.Text,
+							TextSize = 11,
+							Font = Enum.Font.Gotham,
+
+							AutoButtonColor = false,
+						}, OptionsFrame)
+
+						AddCorner(OptionButton, 5)
+
+						OptionButton.MouseButton1Click:Connect(function()
+							Controller:Set(
+								ValueCopy
+							)
+
+							SetOpen(false)
+						end)
+					end
+				end
+
+				function Controller:Set(Value, FireCallback)
+					Current = Value
+
+					UpdateText()
+
+					if FireCallback ~= false then
+						SafeCallback(
+							Options.Callback,
+							Current
+						)
+					end
+				end
+
+				function Controller:Get()
+					return Current
+				end
+
+				function Controller:SetValues(NewValues)
+					Values = NewValues or {}
+
+					Rebuild()
+
+					if Open then
+						SetOpen(false)
+						SetOpen(true)
+					end
+				end
+
+				function Controller:GetValues()
+					return Values
+				end
+
+				function Controller:Open()
+					SetOpen(true)
+				end
+
+				function Controller:Close()
+					SetOpen(false)
+				end
+
+				Selection.MouseButton1Click:Connect(function()
+					SetOpen(not Open)
+				end)
+
+				Rebuild()
+				UpdateText()
+
+				Controller.Instance = Control
+
+				return Controller
+			end
+
+			--------------------------------------------------
+			-- TARGET SELECTOR
+			--------------------------------------------------
+
+			function Section:AddTargetSelector(Options)
+				Options = Options or {}
+
+				local IncludeLocalPlayer =
+					Options.IncludeLocalPlayer == true
+
+				local Dropdown
+
+				local function GetPlayerNames()
+					local Names = {}
+
+					for _, Player in ipairs(
+						Players:GetPlayers()
+					) do
+						if IncludeLocalPlayer
+							or Player ~= LocalPlayer
+						then
+							table.insert(
+								Names,
+								Player.Name
+							)
+						end
+					end
+
+					table.sort(
+						Names,
+						function(A, B)
+							return A:lower()
+								< B:lower()
+						end
+					)
+
+					return Names
+				end
+
+				Dropdown = self:AddDropdown({
+					Name = Options.Name or "Target",
+					Placeholder = "Select target",
+					Values = GetPlayerNames(),
+
+					Callback = function(Name)
+						local Player =
+							Players:FindFirstChild(Name)
+
+						SafeCallback(
+							Options.Callback,
+							Player
+						)
+					end,
+				})
+
+				local Controller = {}
+
+				function Controller:Get()
+					local Name =
+						Dropdown:Get()
+
+					if not Name then
+						return nil
+					end
+
+					return Players:FindFirstChild(
+						Name
+					)
+				end
+
+				function Controller:Set(PlayerOrName)
+					local Name
+
+					if typeof(PlayerOrName)
+						== "Instance"
+					then
+						Name =
+							PlayerOrName.Name
+					else
+						Name =
+							tostring(
+								PlayerOrName
+							)
+					end
+
+					Dropdown:Set(Name)
+				end
+
+				function Controller:Refresh()
+					Dropdown:SetValues(
+						GetPlayerNames()
+					)
+				end
+
+				Players.PlayerAdded:Connect(function()
+					Controller:Refresh()
+				end)
+
+				Players.PlayerRemoving:Connect(function(Player)
+					if Dropdown:Get()
+						== Player.Name
+					then
+						Dropdown:Set(
+							nil,
+							false
+						)
+					end
+
+					Controller:Refresh()
+				end)
+
+				Controller.Dropdown = Dropdown
+
+				return Controller
+			end
+
+			--------------------------------------------------
+			-- CUSTOM CONTROL
+			--------------------------------------------------
+
+			function Section:AddCustom(Options)
+				Options = Options or {}
+
+				local Container = Create("Frame", {
+					Size = UDim2.new(
+						1,
+						0,
+						0,
+						Options.Height or 40
+					),
+
+					BackgroundColor3 =
+						Options.BackgroundColor
+						or UILibrary.Theme.Background3,
+
+					BackgroundTransparency =
+						Options.BackgroundTransparency
+						or 0,
+
+					BorderSizePixel = 0,
+				}, Content)
+
+				if Options.Corner ~= false then
+					AddCorner(
+						Container,
+						Options.CornerRadius or 7
+					)
+				end
+
+				local Result
+
+				if Options.Builder then
+					Result = Options.Builder(
+						Container,
+						self,
+						self.Tab,
+						self.Window,
+						UILibrary
+					)
+				end
+
+				return Result or Container
+			end
+
+			--------------------------------------------------
+			-- REGISTERED CUSTOM WIDGET
+			--------------------------------------------------
+
+			function Section:AddWidget(Name, Options)
+				local Constructor =
+					UILibrary.CustomWidgets[Name]
+
+				assert(
+					Constructor,
+					"Unknown widget: "
+						.. tostring(Name)
+				)
+
+				return Constructor(
+					self,
+					Options or {}
+				)
+			end
+
+			return Section
+		end
+
+		--------------------------------------------------
+		-- TARGET SECTION SHORTCUT
+		--------------------------------------------------
+
+		function Tab:CreateTargetSection(Options)
+			Options = Options or {}
+
+			local Section =
+				self:CreateSection(
+					Options.Name
+						or "Target"
+				)
+
+			Section.TargetSelector =
+				Section:AddTargetSelector({
+					Name =
+						Options.TargetName
+						or "Player",
+
+					IncludeLocalPlayer =
+						Options.IncludeLocalPlayer,
+
+					Callback =
+						Options.Callback,
+				})
+
+			return Section
+		end
+
+		if not self.ActiveTab then
+			Tab:Select()
+		end
+
+		return Tab
+	end
+
+	return Window
+end
+
+return UILibrary
