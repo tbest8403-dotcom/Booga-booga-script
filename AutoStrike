@@ -1,0 +1,142 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
+
+local LocalPlayer = Players.LocalPlayer
+local ToolController = require(ReplicatedStorage:WaitForChild("Game"):WaitForChild("tool"))
+
+local AutoStrike = {
+    Config = {
+        Enabled = false,
+        Width = 8,
+        Height = 7,
+        Depth = 10,
+        OffsetY = 2,
+        ForwardOffset = 5,
+        ScanInterval = 0.05,
+        TargetPlayers = true,
+        TargetOtherEntities = true,
+    },
+}
+
+local Overlap = OverlapParams.new()
+Overlap.FilterType = Enum.RaycastFilterType.Exclude
+
+local function GetCharacter()
+    local Character = LocalPlayer.Character
+    if not Character or Character:GetAttribute("Paused") then return nil end
+    local Humanoid = Character:FindFirstChildOfClass("Humanoid")
+    if not Humanoid or Humanoid.Health <= 0 then return nil end
+    return Character
+end
+
+local function IsPlayerEntity(Model)
+    local Folder = workspace:FindFirstChild("Players")
+    return Folder and Model:IsDescendantOf(Folder) or false
+end
+
+function AutoStrike:Init()
+    if self.Initialized then return self end
+    self.Initialized = true
+    self:Start()
+    return self
+end
+
+function AutoStrike:IsValidTarget(Model)
+    if not Model or not Model:IsA("Model") or Model == LocalPlayer.Character then return false end
+    if Model:GetAttribute("EntityID") == nil then return false end
+
+    local IsPlayer = IsPlayerEntity(Model)
+    if IsPlayer and not self.Config.TargetPlayers then return false end
+    if not IsPlayer and not self.Config.TargetOtherEntities then return false end
+
+    local Humanoid = Model:FindFirstChildOfClass("Humanoid")
+    return not Humanoid or Humanoid.Health > 0
+end
+
+function AutoStrike:FindTarget()
+    local Character = GetCharacter()
+    if not Character then return nil end
+
+    local Excluded = { Character, workspace.Terrain }
+    local Items = workspace:FindFirstChild("Items")
+    if Items then table.insert(Excluded, Items) end
+    for _, Object in ipairs(CollectionService:GetTagged("Contents")) do table.insert(Excluded, Object) end
+    Overlap.FilterDescendantsInstances = Excluded
+
+    local Size = Vector3.new(self.Config.Width, self.Config.Height, self.Config.Depth)
+    local BoxCFrame = Character:GetPivot() * CFrame.new(0, self.Config.OffsetY, -self.Config.ForwardOffset)
+    local Seen = {}
+
+    for _, Part in ipairs(workspace:GetPartBoundsInBox(BoxCFrame, Size, Overlap)) do
+        local Model = Part:FindFirstAncestorWhichIsA("Model")
+        if Model and not Seen[Model] and self:IsValidTarget(Model) then
+            Seen[Model] = true
+            return Model
+        end
+    end
+
+    return nil
+end
+
+function AutoStrike:Scan()
+    if not self.Config.Enabled then return end
+    local Target = self:FindTarget()
+    self.LastTarget = Target
+    if Target then ToolController.swingTool() end
+end
+
+function AutoStrike:Start()
+    if self.Connection then return end
+    self.Accumulator = 0
+    self.Connection = RunService.Heartbeat:Connect(function(DeltaTime)
+        self.Accumulator += DeltaTime
+        if self.Accumulator < self.Config.ScanInterval then return end
+        self.Accumulator = 0
+        self:Scan()
+    end)
+end
+
+function AutoStrike:Stop()
+    if self.Connection then self.Connection:Disconnect() self.Connection = nil end
+end
+
+function AutoStrike:CreateUI(Section)
+    local Controls = {}
+    Controls.Enabled = Section:AddToggle({
+        Name = "Auto Strike", Default = self.Config.Enabled,
+        Callback = function(Value) self.Config.Enabled = Value end,
+    })
+    Controls.Width = Section:AddSlider({
+        Name = "Hitbox Width", Min = 2, Max = 30, Default = self.Config.Width, Increment = 1,
+        Callback = function(Value) self.Config.Width = Value end,
+    })
+    Controls.Height = Section:AddSlider({
+        Name = "Hitbox Height", Min = 2, Max = 20, Default = self.Config.Height, Increment = 1,
+        Callback = function(Value) self.Config.Height = Value end,
+    })
+    Controls.Depth = Section:AddSlider({
+        Name = "Hitbox Depth", Min = 2, Max = 30, Default = self.Config.Depth, Increment = 1,
+        Callback = function(Value) self.Config.Depth = Value end,
+    })
+    Controls.Forward = Section:AddSlider({
+        Name = "Forward Offset", Min = 1, Max = 20, Default = self.Config.ForwardOffset, Increment = 0.5,
+        Callback = function(Value) self.Config.ForwardOffset = Value end,
+    })
+    Controls.Interval = Section:AddSlider({
+        Name = "Scan Interval", Min = 0.03, Max = 0.5, Default = self.Config.ScanInterval, Increment = 0.01,
+        Callback = function(Value) self.Config.ScanInterval = Value end,
+    })
+    Controls.Players = Section:AddToggle({
+        Name = "Target Players", Default = self.Config.TargetPlayers,
+        Callback = function(Value) self.Config.TargetPlayers = Value end,
+    })
+    Controls.Entities = Section:AddToggle({
+        Name = "Target Other Entities", Default = self.Config.TargetOtherEntities,
+        Callback = function(Value) self.Config.TargetOtherEntities = Value end,
+    })
+    return Controls
+end
+
+return AutoStrike
