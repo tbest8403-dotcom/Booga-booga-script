@@ -1,0 +1,299 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local ItemData = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("ItemData"))
+
+local SearchFilter = {
+    Config = { MaxSuggestions = 7 },
+    SelectedItems = {},
+    SelectedTypes = {},
+    ItemNames = {},
+    ItemTypes = {},
+}
+
+local function Normalize(Text)
+    return tostring(Text or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function AddCorner(Object, Radius)
+    local Corner = Instance.new("UICorner")
+    Corner.CornerRadius = UDim.new(0, Radius or 7)
+    Corner.Parent = Object
+end
+
+local function AddPadding(Object, Left, Right)
+    local Padding = Instance.new("UIPadding")
+    Padding.PaddingLeft = UDim.new(0, Left or 0)
+    Padding.PaddingRight = UDim.new(0, Right or 0)
+    Padding.Parent = Object
+end
+
+function SearchFilter:Init(Context)
+    if self.Initialized then return self end
+    self.Initialized = true
+    self.Context = Context or {}
+
+    local KnownTypes = {}
+    for ItemName, Info in pairs(ItemData) do
+        if type(ItemName) == "string" and type(Info) == "table" then
+            table.insert(self.ItemNames, ItemName)
+            if type(Info.itemType) == "string" and not KnownTypes[Info.itemType] then
+                KnownTypes[Info.itemType] = true
+                table.insert(self.ItemTypes, Info.itemType)
+            end
+        end
+    end
+
+    table.sort(self.ItemNames, function(A, B) return A:lower() < B:lower() end)
+    table.sort(self.ItemTypes, function(A, B) return A:lower() < B:lower() end)
+    return self
+end
+
+function SearchFilter:HasFilters()
+    return next(self.SelectedItems) ~= nil or next(self.SelectedTypes) ~= nil
+end
+
+function SearchFilter:Matches(Item)
+    if not Item then return false end
+    if not self:HasFilters() then return true end
+    if self.SelectedItems[Item.Name] then return true end
+
+    local Info = ItemData[Item.Name]
+    return Info and type(Info.itemType) == "string" and self.SelectedTypes[Info.itemType] == true or false
+end
+
+function SearchFilter:GetSuggestions(Query, Limit)
+    Query = Normalize(Query)
+    if Query == "" then return {} end
+    Limit = Limit or self.Config.MaxSuggestions
+
+    local Results, Seen = {}, {}
+    local function Add(Kind, Value)
+        local Key = Kind .. "\0" .. Value
+        if Seen[Key] or #Results >= Limit then return end
+        Seen[Key] = true
+        table.insert(Results, { Kind = Kind, Value = Value })
+    end
+    local function Starts(Text) return Normalize(Text):sub(1, #Query) == Query end
+    local function Contains(Text) return string.find(Normalize(Text), Query, 1, true) ~= nil end
+
+    for _, Value in ipairs(self.ItemTypes) do
+        if Starts(Value) and not self.SelectedTypes[Value] then Add("Type", Value) end
+    end
+    for _, Value in ipairs(self.ItemNames) do
+        if #Results >= Limit then break end
+        if Starts(Value) and not self.SelectedItems[Value] then Add("Item", Value) end
+    end
+    for _, Value in ipairs(self.ItemTypes) do
+        if #Results >= Limit then break end
+        if Contains(Value) and not self.SelectedTypes[Value] then Add("Type", Value) end
+    end
+    for _, Value in ipairs(self.ItemNames) do
+        if #Results >= Limit then break end
+        if Contains(Value) and not self.SelectedItems[Value] then Add("Item", Value) end
+    end
+
+    return Results
+end
+
+function SearchFilter:Clear()
+    table.clear(self.SelectedItems)
+    table.clear(self.SelectedTypes)
+    if self.UI and self.UI.RefreshSelected then self.UI.RefreshSelected() end
+end
+
+function SearchFilter:Add(Kind, Value)
+    if Kind == "Type" then
+        self.SelectedTypes[Value] = true
+    else
+        self.SelectedItems[Value] = true
+    end
+    if self.UI and self.UI.RefreshSelected then self.UI.RefreshSelected() end
+end
+
+function SearchFilter:Remove(Kind, Value)
+    if Kind == "Type" then
+        self.SelectedTypes[Value] = nil
+    else
+        self.SelectedItems[Value] = nil
+    end
+    if self.UI and self.UI.RefreshSelected then self.UI.RefreshSelected() end
+end
+
+function SearchFilter:CreateUI(Section)
+    local Theme = self.Context.UILibrary.Theme
+    local UI = { SuggestionButtons = {} }
+    self.UI = UI
+
+    Section:AddCustom({
+        Height = 44,
+        Builder = function(Container)
+            Container.BackgroundTransparency = 1
+
+            local Box = Instance.new("TextBox")
+            Box.Size = UDim2.new(1, 0, 0, 38)
+            Box.BackgroundColor3 = Theme.Background3
+            Box.BorderSizePixel = 0
+            Box.ClearTextOnFocus = false
+            Box.PlaceholderText = "Search item or type..."
+            Box.PlaceholderColor3 = Theme.DisabledText
+            Box.Text = ""
+            Box.TextColor3 = Theme.Text
+            Box.TextSize = 12
+            Box.Font = Enum.Font.Gotham
+            Box.TextXAlignment = Enum.TextXAlignment.Left
+            Box.Parent = Container
+            AddCorner(Box, 7)
+            AddPadding(Box, 10, 10)
+
+            local Suggestions = Instance.new("Frame")
+            Suggestions.Size = UDim2.new(1, 0, 0, 0)
+            Suggestions.Position = UDim2.fromOffset(0, 42)
+            Suggestions.BackgroundColor3 = Theme.Background2
+            Suggestions.BorderSizePixel = 0
+            Suggestions.ClipsDescendants = true
+            Suggestions.ZIndex = 20
+            Suggestions.Parent = Container
+            AddCorner(Suggestions, 7)
+
+            local Layout = Instance.new("UIListLayout")
+            Layout.Padding = UDim.new(0, 2)
+            Layout.Parent = Suggestions
+
+            UI.Box = Box
+            UI.Suggestions = Suggestions
+            UI.SearchContainer = Container
+        end,
+    })
+
+    Section:AddCustom({
+        Height = 62,
+        Builder = function(Container)
+            Container.BackgroundTransparency = 1
+
+            local Title = Instance.new("TextLabel")
+            Title.Size = UDim2.new(1, 0, 0, 20)
+            Title.BackgroundTransparency = 1
+            Title.Text = "SELECTED FILTERS"
+            Title.TextColor3 = Theme.SubText
+            Title.TextSize = 10
+            Title.Font = Enum.Font.GothamBold
+            Title.TextXAlignment = Enum.TextXAlignment.Left
+            Title.Parent = Container
+
+            local List = Instance.new("Frame")
+            List.Size = UDim2.new(1, 0, 0, 0)
+            List.Position = UDim2.fromOffset(0, 24)
+            List.BackgroundTransparency = 1
+            List.AutomaticSize = Enum.AutomaticSize.Y
+            List.Parent = Container
+
+            local Layout = Instance.new("UIListLayout")
+            Layout.Padding = UDim.new(0, 5)
+            Layout.Parent = List
+
+            UI.SelectedContainer = Container
+            UI.SelectedList = List
+        end,
+    })
+
+    local function ClearSuggestions()
+        for _, Button in ipairs(UI.SuggestionButtons) do Button:Destroy() end
+        table.clear(UI.SuggestionButtons)
+        UI.Suggestions.Size = UDim2.new(1, 0, 0, 0)
+        UI.SearchContainer.Size = UDim2.new(1, 0, 0, 44)
+    end
+
+    local function RefreshSuggestions()
+        ClearSuggestions()
+        local Results = self:GetSuggestions(UI.Box.Text, self.Config.MaxSuggestions)
+        for _, Result in ipairs(Results) do
+            local Button = Instance.new("TextButton")
+            Button.Size = UDim2.new(1, 0, 0, 30)
+            Button.BackgroundColor3 = Theme.Button
+            Button.BorderSizePixel = 0
+            Button.AutoButtonColor = false
+            Button.Text = Result.Kind == "Type" and ("TYPE: " .. Result.Value) or Result.Value
+            Button.TextColor3 = Theme.Text
+            Button.TextSize = 11
+            Button.Font = Enum.Font.Gotham
+            Button.TextXAlignment = Enum.TextXAlignment.Left
+            Button.ZIndex = 21
+            Button.Parent = UI.Suggestions
+            AddCorner(Button, 5)
+            AddPadding(Button, 9, 9)
+
+            Button.MouseButton1Click:Connect(function()
+                self:Add(Result.Kind, Result.Value)
+                UI.Box.Text = ""
+                ClearSuggestions()
+            end)
+            table.insert(UI.SuggestionButtons, Button)
+        end
+
+        if #Results > 0 then
+            local Height = #Results * 32
+            UI.Suggestions.Size = UDim2.new(1, 0, 0, Height)
+            UI.SearchContainer.Size = UDim2.new(1, 0, 0, 44 + Height)
+        end
+    end
+
+    function UI.RefreshSelected()
+        for _, Child in ipairs(UI.SelectedList:GetChildren()) do
+            if Child:IsA("TextButton") or Child:IsA("TextLabel") then Child:Destroy() end
+        end
+
+        local Entries = {}
+        for Value in pairs(self.SelectedTypes) do table.insert(Entries, { Kind = "Type", Value = Value }) end
+        for Value in pairs(self.SelectedItems) do table.insert(Entries, { Kind = "Item", Value = Value }) end
+        table.sort(Entries, function(A, B) return A.Value:lower() < B.Value:lower() end)
+
+        if #Entries == 0 then
+            local Empty = Instance.new("TextLabel")
+            Empty.Size = UDim2.new(1, 0, 0, 32)
+            Empty.BackgroundColor3 = Theme.Background3
+            Empty.BorderSizePixel = 0
+            Empty.Text = "No filters selected - all pickups allowed"
+            Empty.TextColor3 = Theme.SubText
+            Empty.TextSize = 10
+            Empty.Font = Enum.Font.Gotham
+            Empty.Parent = UI.SelectedList
+            AddCorner(Empty, 6)
+            UI.SelectedContainer.Size = UDim2.new(1, 0, 0, 62)
+            return
+        end
+
+        for _, Entry in ipairs(Entries) do
+            local Button = Instance.new("TextButton")
+            Button.Size = UDim2.new(1, 0, 0, 32)
+            Button.BackgroundColor3 = Theme.Background3
+            Button.BorderSizePixel = 0
+            Button.AutoButtonColor = false
+            Button.Text = (Entry.Kind == "Type" and ("TYPE: " .. Entry.Value) or Entry.Value) .. "   REMOVE"
+            Button.TextColor3 = Theme.Text
+            Button.TextSize = 10
+            Button.Font = Enum.Font.Gotham
+            Button.Parent = UI.SelectedList
+            AddCorner(Button, 6)
+            Button.MouseButton1Click:Connect(function() self:Remove(Entry.Kind, Entry.Value) end)
+        end
+
+        UI.SelectedContainer.Size = UDim2.new(1, 0, 0, 30 + (#Entries * 37))
+    end
+
+    UI.Box:GetPropertyChangedSignal("Text"):Connect(RefreshSuggestions)
+    UI.Box.FocusLost:Connect(function(EnterPressed)
+        if not EnterPressed then return end
+        local First = self:GetSuggestions(UI.Box.Text, 1)[1]
+        if First then
+            self:Add(First.Kind, First.Value)
+            UI.Box.Text = ""
+            ClearSuggestions()
+        end
+    end)
+
+    Section:AddButton({ Name = "Clear Filters", Callback = function() self:Clear() end })
+    UI.RefreshSelected()
+    return UI
+end
+
+return SearchFilter
