@@ -1,6 +1,7 @@
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local Workspace = game:GetService("Workspace")
 
 local LocalPlayer = Players.LocalPlayer
 
@@ -8,6 +9,25 @@ local UILibrary = {}
 UILibrary.__index = UILibrary
 
 UILibrary.CustomWidgets = {}
+
+--------------------------------------------------
+-- GLOBAL INSTANCE REGISTRY
+--------------------------------------------------
+
+local Environment
+
+if getgenv then
+	Environment = getgenv()
+else
+	Environment = _G
+end
+
+Environment.__CustomUILibraryInstances =
+	Environment.__CustomUILibraryInstances
+	or {}
+
+local GlobalInstances =
+	Environment.__CustomUILibraryInstances
 
 --------------------------------------------------
 -- THEME
@@ -66,7 +86,13 @@ local function AddStroke(Object, Color, Thickness)
 	}, Object)
 end
 
-local function AddPadding(Object, Left, Right, Top, Bottom)
+local function AddPadding(
+	Object,
+	Left,
+	Right,
+	Top,
+	Bottom
+)
 	return Create("UIPadding", {
 		PaddingLeft = UDim.new(0, Left or 0),
 		PaddingRight = UDim.new(0, Right or 0),
@@ -80,10 +106,11 @@ local function SafeCallback(Callback, ...)
 		return
 	end
 
-	local Success, Error = pcall(
-		Callback,
-		...
-	)
+	local Success, Error =
+		pcall(
+			Callback,
+			...
+		)
 
 	if not Success then
 		warn(
@@ -103,20 +130,27 @@ local function Clamp(Value, Minimum, Maximum)
 	)
 end
 
-local function RoundToIncrement(Value, Increment)
-	if not Increment or Increment <= 0 then
+local function RoundToIncrement(
+	Value,
+	Increment
+)
+	if not Increment
+		or Increment <= 0
+	then
 		return Value
 	end
 
 	return math.floor(
-		(Value / Increment) + 0.5
+		(Value / Increment)
+			+ 0.5
 	) * Increment
 end
 
 local function FormatNumber(Value)
 	if math.abs(
 		Value - math.floor(Value)
-	) < 0.0001 then
+	) < 0.0001
+	then
 		return tostring(
 			math.floor(Value)
 		)
@@ -128,16 +162,27 @@ local function FormatNumber(Value)
 	)
 end
 
-local function Tween(Object, Duration, Properties)
-	local Animation = TweenService:Create(
-		Object,
-		TweenInfo.new(
-			Duration or 0.12,
-			Enum.EasingStyle.Quad,
-			Enum.EasingDirection.Out
-		),
-		Properties
-	)
+local function Tween(
+	Object,
+	Duration,
+	Properties
+)
+	if not Object
+		or not Object.Parent
+	then
+		return nil
+	end
+
+	local Animation =
+		TweenService:Create(
+			Object,
+			TweenInfo.new(
+				Duration or 0.12,
+				Enum.EasingStyle.Quad,
+				Enum.EasingDirection.Out
+			),
+			Properties
+		)
 
 	Animation:Play()
 
@@ -145,10 +190,13 @@ local function Tween(Object, Duration, Properties)
 end
 
 --------------------------------------------------
--- CUSTOM WIDGETS
+-- REGISTER CUSTOM WIDGET
 --------------------------------------------------
 
-function UILibrary:RegisterWidget(Name, Constructor)
+function UILibrary:RegisterWidget(
+	Name,
+	Constructor
+)
 	assert(
 		type(Name) == "string",
 		"Widget name must be a string"
@@ -159,11 +207,40 @@ function UILibrary:RegisterWidget(Name, Constructor)
 		"Widget constructor must be a function"
 	)
 
-	self.CustomWidgets[Name] = Constructor
+	self.CustomWidgets[Name] =
+		Constructor
 end
 
 --------------------------------------------------
--- WINDOW
+-- GET RUNNING WINDOW
+--------------------------------------------------
+
+function UILibrary:GetWindow(Key)
+	return GlobalInstances[
+		Key or "CustomUILibrary"
+	]
+end
+
+--------------------------------------------------
+-- DESTROY RUNNING WINDOW
+--------------------------------------------------
+
+function UILibrary:DestroyWindow(Key)
+	local Window =
+		GlobalInstances[
+			Key or "CustomUILibrary"
+		]
+
+	if Window
+		and type(Window.Destroy)
+			== "function"
+	then
+		Window:Destroy()
+	end
+end
+
+--------------------------------------------------
+-- CREATE WINDOW
 --------------------------------------------------
 
 function UILibrary:CreateWindow(Options)
@@ -172,6 +249,18 @@ function UILibrary:CreateWindow(Options)
 	local Window = {}
 
 	Window.Library = self
+
+	Window.Key =
+		Options.Key
+		or Options.GuiName
+		or "CustomUILibrary"
+
+	Window.GuiName =
+		Options.GuiName
+		or Window.Key
+
+	Window.Override =
+		Options.Override ~= false
 
 	Window.Title =
 		Options.Title
@@ -189,7 +278,30 @@ function UILibrary:CreateWindow(Options)
 
 	Window.Tabs = {}
 	Window.ActiveTab = nil
+
 	Window.Connections = {}
+	Window.CleanupCallbacks = {}
+
+	--------------------------------------------------
+	-- OVERRIDE PREVIOUS INSTANCE
+	--------------------------------------------------
+
+	if Window.Override then
+		local Previous =
+			GlobalInstances[
+				Window.Key
+			]
+
+		if Previous
+			and Previous ~= Window
+			and type(Previous.Destroy)
+				== "function"
+		then
+			pcall(function()
+				Previous:Destroy()
+			end)
+		end
+	end
 
 	local Parent =
 		Options.Parent
@@ -198,20 +310,200 @@ function UILibrary:CreateWindow(Options)
 		)
 
 	--------------------------------------------------
+	-- REMOVE STRANDED GUI
+	--------------------------------------------------
+
+	if Window.Override then
+		local Existing =
+			Parent:FindFirstChild(
+				Window.GuiName
+			)
+
+		if Existing then
+			pcall(function()
+				Existing:Destroy()
+			end)
+		end
+	end
+
+	--------------------------------------------------
+	-- CONNECTION MANAGER
+	--------------------------------------------------
+
+	function Window:Connect(
+		Signal,
+		Callback
+	)
+		if self.Destroyed then
+			return nil
+		end
+
+		local Connection =
+			Signal:Connect(
+				Callback
+			)
+
+		table.insert(
+			self.Connections,
+			Connection
+		)
+
+		return Connection
+	end
+
+	--------------------------------------------------
+	-- CUSTOM CLEANUP
+	--------------------------------------------------
+
+	function Window:AddCleanup(Callback)
+		if type(Callback)
+			~= "function"
+		then
+			return nil
+		end
+
+		table.insert(
+			self.CleanupCallbacks,
+			Callback
+		)
+
+		return Callback
+	end
+
+	Window.OnDestroy =
+		Window.AddCleanup
+
+	--------------------------------------------------
+	-- DESTROY
+	--------------------------------------------------
+
+	function Window:Destroy()
+		if self.Destroyed then
+			return
+		end
+
+		self.Destroyed = true
+		self.Visible = false
+
+		--------------------------------------------------
+		-- HIDE IMMEDIATELY
+		--------------------------------------------------
+
+		if self.Gui then
+			pcall(function()
+				self.Gui.Enabled = false
+			end)
+		end
+
+		--------------------------------------------------
+		-- RUN CUSTOM CLEANUP
+		--------------------------------------------------
+
+		for Index =
+			#self.CleanupCallbacks,
+			1,
+			-1
+		do
+			local Callback =
+				self.CleanupCallbacks[
+					Index
+				]
+
+			pcall(
+				Callback
+			)
+		end
+
+		table.clear(
+			self.CleanupCallbacks
+		)
+
+		--------------------------------------------------
+		-- DISCONNECT EVERYTHING
+		--------------------------------------------------
+
+		for Index =
+			#self.Connections,
+			1,
+			-1
+		do
+			local Connection =
+				self.Connections[
+					Index
+				]
+
+			pcall(function()
+				if Connection
+					and Connection.Connected
+				then
+					Connection:Disconnect()
+				end
+			end)
+		end
+
+		table.clear(
+			self.Connections
+		)
+
+		--------------------------------------------------
+		-- DESTROY GUI
+		--------------------------------------------------
+
+		if self.Gui then
+			pcall(function()
+				self.Gui:Destroy()
+			end)
+
+			self.Gui = nil
+		end
+
+		--------------------------------------------------
+		-- REMOVE GLOBAL INSTANCE
+		--------------------------------------------------
+
+		if GlobalInstances[
+			self.Key
+		] == self
+		then
+			GlobalInstances[
+				self.Key
+			] = nil
+		end
+	end
+
+	--------------------------------------------------
+	-- REGISTER INSTANCE
+	--------------------------------------------------
+
+	GlobalInstances[
+		Window.Key
+	] = Window
+
+	--------------------------------------------------
 	-- SCREEN GUI
 	--------------------------------------------------
 
-	local ScreenGui = Create("ScreenGui", {
-		Name =
-			Options.GuiName
-			or "CustomUILibrary",
+	local ScreenGui = Create(
+		"ScreenGui",
+		{
+			Name =
+				Window.GuiName,
 
-		ResetOnSpawn = false,
-		IgnoreGuiInset = false,
+			ResetOnSpawn = false,
 
-		ZIndexBehavior =
-			Enum.ZIndexBehavior.Sibling,
-	}, Parent)
+			IgnoreGuiInset =
+				Options.IgnoreGuiInset
+				== true,
+
+			DisplayOrder =
+				Options.DisplayOrder
+				or 100,
+
+			ZIndexBehavior =
+				Enum.ZIndexBehavior.Sibling,
+		},
+		Parent
+	)
 
 	Window.Gui =
 		ScreenGui
@@ -220,50 +512,54 @@ function UILibrary:CreateWindow(Options)
 	-- REOPEN BUTTON
 	--------------------------------------------------
 
-	local ReopenButton = Create("TextButton", {
-		Name = "ReopenButton",
+	local ReopenButton = Create(
+		"TextButton",
+		{
+			Name = "ReopenButton",
 
-		Size =
-			UDim2.fromOffset(
-				110,
-				32
-			),
+			Size =
+				UDim2.fromOffset(
+					110,
+					32
+				),
 
-		Position =
-			UDim2.new(
-				0.5,
-				0,
-				0,
-				8
-			),
+			Position =
+				UDim2.new(
+					0.5,
+					0,
+					0,
+					8
+				),
 
-		AnchorPoint =
-			Vector2.new(
-				0.5,
-				0
-			),
+			AnchorPoint =
+				Vector2.new(
+					0.5,
+					0
+				),
 
-		BackgroundColor3 =
-			self.Theme.Background2,
+			BackgroundColor3 =
+				self.Theme.Background2,
 
-		BorderSizePixel = 0,
+			BorderSizePixel = 0,
 
-		Text =
-			Options.ReopenText
-			or "Open UI",
+			Text =
+				Options.ReopenText
+				or "Open UI",
 
-		TextColor3 =
-			self.Theme.Text,
+			TextColor3 =
+				self.Theme.Text,
 
-		TextSize = 12,
+			TextSize = 12,
 
-		Font =
-			Enum.Font.GothamBold,
+			Font =
+				Enum.Font.GothamBold,
 
-		AutoButtonColor = false,
+			AutoButtonColor = false,
 
-		Visible = false,
-	}, ScreenGui)
+			Visible = false,
+		},
+		ScreenGui
+	)
 
 	AddCorner(
 		ReopenButton,
@@ -278,41 +574,45 @@ function UILibrary:CreateWindow(Options)
 	-- MAIN
 	--------------------------------------------------
 
-	local Main = Create("Frame", {
-		Name = "Main",
+	local Main = Create(
+		"Frame",
+		{
+			Name = "Main",
 
-		Size =
-			UDim2.fromOffset(
-				Window.Size.X,
-				Window.Size.Y
-			),
+			Size =
+				UDim2.fromOffset(
+					Window.Size.X,
+					Window.Size.Y
+				),
 
-		Position =
-			Options.Position
-			or UDim2.fromScale(
-				0.5,
-				0.5
-			),
-
-		AnchorPoint =
-			Options.AnchorPoint
-			or (
+			Position =
 				Options.Position
-					and Vector2.zero
-					or Vector2.new(
-						0.5,
-						0.5
-					)
-			),
+				or UDim2.fromScale(
+					0.5,
+					0.5
+				),
 
-		BackgroundColor3 =
-			self.Theme.Background,
+			AnchorPoint =
+				Options.AnchorPoint
+				or (
+					Options.Position
+						and Vector2.zero
+						or Vector2.new(
+							0.5,
+							0.5
+						)
+				),
 
-		BorderSizePixel = 0,
+			BackgroundColor3 =
+				self.Theme.Background,
 
-		ClipsDescendants = true,
-		Active = true,
-	}, ScreenGui)
+			BorderSizePixel = 0,
+
+			ClipsDescendants = true,
+			Active = true,
+		},
+		ScreenGui
+	)
 
 	Window.Main =
 		Main
@@ -327,16 +627,26 @@ function UILibrary:CreateWindow(Options)
 	)
 
 	--------------------------------------------------
-	-- RESPONSIVE SCALE
+	-- SCALE
 	--------------------------------------------------
 
-	local UIScale = Create("UIScale", {
-		Scale = 1,
-	}, Main)
+	local UIScale = Create(
+		"UIScale",
+		{
+			Scale = 1,
+		},
+		Main
+	)
+
+	local CameraConnection = nil
 
 	local function UpdateScale()
+		if Window.Destroyed then
+			return
+		end
+
 		local Camera =
-			workspace.CurrentCamera
+			Workspace.CurrentCamera
 
 		if not Camera then
 			return
@@ -371,55 +681,74 @@ function UILibrary:CreateWindow(Options)
 			)
 	end
 
-	UpdateScale()
+	local function BindCamera()
+		if CameraConnection then
+			pcall(function()
+				CameraConnection:Disconnect()
+			end)
 
-	if workspace.CurrentCamera then
-		table.insert(
-			Window.Connections,
+			CameraConnection = nil
+		end
 
-			workspace.CurrentCamera
-				:GetPropertyChangedSignal(
-					"ViewportSize"
-				)
-				:Connect(
+		local Camera =
+			Workspace.CurrentCamera
+
+		if Camera then
+			CameraConnection =
+				Window:Connect(
+					Camera:GetPropertyChangedSignal(
+						"ViewportSize"
+					),
 					UpdateScale
 				)
-		)
+		end
+
+		UpdateScale()
 	end
+
+	Window:Connect(
+		Workspace:GetPropertyChangedSignal(
+			"CurrentCamera"
+		),
+		BindCamera
+	)
+
+	BindCamera()
 
 	--------------------------------------------------
 	-- TITLE BAR
 	--------------------------------------------------
 
-	local TitleBar = Create("Frame", {
-		Name = "TitleBar",
+	local TitleBar = Create(
+		"Frame",
+		{
+			Name = "TitleBar",
 
-		Size =
-			UDim2.new(
-				1,
-				-2,
-				0,
-				44
-			),
+			Size =
+				UDim2.new(
+					1,
+					-2,
+					0,
+					44
+				),
 
-		Position =
-			UDim2.fromOffset(
-				1,
-				1
-			),
+			Position =
+				UDim2.fromOffset(
+					1,
+					1
+				),
 
-		BackgroundColor3 =
-			self.Theme.Background2,
+			BackgroundColor3 =
+				self.Theme.Background2,
 
-		BorderSizePixel = 0,
+			BorderSizePixel = 0,
 
-		Active = true,
-		ZIndex = 2,
-	}, Main)
+			Active = true,
 
-	--------------------------------------------------
-	-- ROUND TITLE BAR TOP
-	--------------------------------------------------
+			ZIndex = 2,
+		},
+		Main
+	)
 
 	AddCorner(
 		TitleBar,
@@ -427,117 +756,130 @@ function UILibrary:CreateWindow(Options)
 	)
 
 	--------------------------------------------------
-	-- TITLE BOTTOM FIX
-	-- Keeps bottom edge flat while top remains rounded
+	-- FLAT TITLE BOTTOM
 	--------------------------------------------------
 
-	local TitleBottomFix = Create("Frame", {
-		Name = "TitleBottomFix",
+	Create(
+		"Frame",
+		{
+			Name =
+				"TitleBottomFix",
 
-		Size =
-			UDim2.new(
-				1,
-				0,
-				0,
-				12
-			),
+			Size =
+				UDim2.new(
+					1,
+					0,
+					0,
+					12
+				),
 
-		Position =
-			UDim2.new(
-				0,
-				0,
-				1,
-				-12
-			),
+			Position =
+				UDim2.new(
+					0,
+					0,
+					1,
+					-12
+				),
 
-		BackgroundColor3 =
-			self.Theme.Background2,
+			BackgroundColor3 =
+				self.Theme.Background2,
 
-		BorderSizePixel = 0,
+			BorderSizePixel = 0,
 
-		ZIndex = 2,
-	}, TitleBar)
-
-	--------------------------------------------------
-	-- TITLE TEXT
-	--------------------------------------------------
-
-	local Title = Create("TextLabel", {
-		Name = "Title",
-
-		Size =
-			UDim2.new(
-				1,
-				-55,
-				1,
-				0
-			),
-
-		Position =
-			UDim2.fromOffset(
-				14,
-				0
-			),
-
-		BackgroundTransparency = 1,
-
-		Text =
-			Window.Title,
-
-		TextColor3 =
-			self.Theme.Text,
-
-		TextSize = 15,
-
-		Font =
-			Enum.Font.GothamBold,
-
-		TextXAlignment =
-			Enum.TextXAlignment.Left,
-
-		ZIndex = 3,
-	}, TitleBar)
+			ZIndex = 2,
+		},
+		TitleBar
+	)
 
 	--------------------------------------------------
-	-- CLOSE BUTTON
+	-- TITLE
 	--------------------------------------------------
 
-	local CloseButton = Create("TextButton", {
-		Name = "CloseButton",
+	local Title = Create(
+		"TextLabel",
+		{
+			Name = "Title",
 
-		Size =
-			UDim2.fromOffset(
-				32,
-				32
-			),
+			Size =
+				UDim2.new(
+					1,
+					-55,
+					1,
+					0
+				),
 
-		Position =
-			UDim2.new(
-				1,
-				-38,
-				0,
-				6
-			),
+			Position =
+				UDim2.fromOffset(
+					14,
+					0
+				),
 
-		BackgroundColor3 =
-			self.Theme.Button,
+			BackgroundTransparency = 1,
 
-		BorderSizePixel = 0,
+			Text =
+				Window.Title,
 
-		Text = "X",
+			TextColor3 =
+				self.Theme.Text,
 
-		TextColor3 =
-			self.Theme.Text,
+			TextSize = 15,
 
-		TextSize = 12,
+			Font =
+				Enum.Font.GothamBold,
 
-		Font =
-			Enum.Font.GothamBold,
+			TextXAlignment =
+				Enum.TextXAlignment.Left,
 
-		AutoButtonColor = false,
+			ZIndex = 3,
+		},
+		TitleBar
+	)
 
-		ZIndex = 4,
-	}, TitleBar)
+	--------------------------------------------------
+	-- CLOSE
+	--------------------------------------------------
+
+	local CloseButton = Create(
+		"TextButton",
+		{
+			Name =
+				"CloseButton",
+
+			Size =
+				UDim2.fromOffset(
+					32,
+					32
+				),
+
+			Position =
+				UDim2.new(
+					1,
+					-38,
+					0,
+					6
+				),
+
+			BackgroundColor3 =
+				self.Theme.Button,
+
+			BorderSizePixel = 0,
+
+			Text = "X",
+
+			TextColor3 =
+				self.Theme.Text,
+
+			TextSize = 12,
+
+			Font =
+				Enum.Font.GothamBold,
+
+			AutoButtonColor = false,
+
+			ZIndex = 4,
+		},
+		TitleBar
+	)
 
 	AddCorner(
 		CloseButton,
@@ -551,178 +893,169 @@ function UILibrary:CreateWindow(Options)
 	local Dragging = false
 	local DragStart = nil
 	local StartPosition = nil
-	local ActiveDragInput = nil
 
-	local function UpdateDrag(Input)
-		if not Dragging then
-			return
+	Window:Connect(
+		TitleBar.InputBegan,
+		function(Input)
+			if
+				Input.UserInputType
+					== Enum.UserInputType.MouseButton1
+				or Input.UserInputType
+					== Enum.UserInputType.Touch
+			then
+				Dragging = true
+
+				DragStart =
+					Input.Position
+
+				StartPosition =
+					Main.Position
+			end
 		end
-
-		local Delta =
-			Input.Position
-			- DragStart
-
-		Main.Position =
-			UDim2.new(
-				StartPosition.X.Scale,
-				StartPosition.X.Offset
-					+ Delta.X,
-
-				StartPosition.Y.Scale,
-				StartPosition.Y.Offset
-					+ Delta.Y
-			)
-	end
-
-	table.insert(
-		Window.Connections,
-
-		TitleBar.InputBegan:Connect(
-			function(Input)
-				if
-					Input.UserInputType
-						== Enum.UserInputType.MouseButton1
-					or Input.UserInputType
-						== Enum.UserInputType.Touch
-				then
-					Dragging = true
-
-					DragStart =
-						Input.Position
-
-					StartPosition =
-						Main.Position
-
-					ActiveDragInput =
-						Input
-				end
-			end
-		)
 	)
 
-	table.insert(
-		Window.Connections,
-
-		UserInputService.InputChanged:Connect(
-			function(Input)
-				if not Dragging then
-					return
-				end
-
-				if
-					Input.UserInputType
-						== Enum.UserInputType.MouseMovement
-					or Input.UserInputType
-						== Enum.UserInputType.Touch
-				then
-					UpdateDrag(
-						Input
-					)
-				end
+	Window:Connect(
+		UserInputService.InputChanged,
+		function(Input)
+			if not Dragging
+				or not DragStart
+				or not StartPosition
+			then
+				return
 			end
-		)
+
+			if
+				Input.UserInputType
+					~= Enum.UserInputType.MouseMovement
+				and Input.UserInputType
+					~= Enum.UserInputType.Touch
+			then
+				return
+			end
+
+			local Delta =
+				Input.Position
+				- DragStart
+
+			Main.Position =
+				UDim2.new(
+					StartPosition.X.Scale,
+					StartPosition.X.Offset
+						+ Delta.X,
+
+					StartPosition.Y.Scale,
+					StartPosition.Y.Offset
+						+ Delta.Y
+				)
+		end
 	)
 
-	table.insert(
-		Window.Connections,
-
-		UserInputService.InputEnded:Connect(
-			function(Input)
-				if
-					Input
-						== ActiveDragInput
-					or Input.UserInputType
-						== Enum.UserInputType.MouseButton1
-					or Input.UserInputType
-						== Enum.UserInputType.Touch
-				then
-					Dragging = false
-					ActiveDragInput = nil
-				end
+	Window:Connect(
+		UserInputService.InputEnded,
+		function(Input)
+			if
+				Input.UserInputType
+					== Enum.UserInputType.MouseButton1
+				or Input.UserInputType
+					== Enum.UserInputType.Touch
+			then
+				Dragging = false
+				DragStart = nil
+				StartPosition = nil
 			end
-		)
+		end
 	)
 
 	--------------------------------------------------
 	-- TAB BAR
 	--------------------------------------------------
 
-	local TabBar = Create("ScrollingFrame", {
-		Name = "TabBar",
+	local TabBar = Create(
+		"ScrollingFrame",
+		{
+			Name = "TabBar",
 
-		Size =
-			UDim2.new(
-				1,
-				-16,
-				0,
-				38
-			),
+			Size =
+				UDim2.new(
+					1,
+					-16,
+					0,
+					38
+				),
 
-		Position =
-			UDim2.fromOffset(
-				8,
-				50
-			),
+			Position =
+				UDim2.fromOffset(
+					8,
+					50
+				),
 
-		BackgroundTransparency = 1,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
 
-		BorderSizePixel = 0,
+			ScrollBarThickness = 0,
 
-		ScrollBarThickness = 0,
+			ScrollingDirection =
+				Enum.ScrollingDirection.X,
 
-		ScrollingDirection =
-			Enum.ScrollingDirection.X,
+			AutomaticCanvasSize =
+				Enum.AutomaticSize.X,
 
-		AutomaticCanvasSize =
-			Enum.AutomaticSize.X,
+			CanvasSize =
+				UDim2.new(),
 
-		CanvasSize =
-			UDim2.new(),
+			ClipsDescendants = true,
+		},
+		Main
+	)
 
-		ClipsDescendants = true,
-	}, Main)
+	Create(
+		"UIListLayout",
+		{
+			FillDirection =
+				Enum.FillDirection.Horizontal,
 
-	Create("UIListLayout", {
-		FillDirection =
-			Enum.FillDirection.Horizontal,
+			Padding =
+				UDim.new(
+					0,
+					6
+				),
 
-		Padding =
-			UDim.new(
-				0,
-				6
-			),
-
-		SortOrder =
-			Enum.SortOrder.LayoutOrder,
-	}, TabBar)
+			SortOrder =
+				Enum.SortOrder.LayoutOrder,
+		},
+		TabBar
+	)
 
 	--------------------------------------------------
 	-- PAGE CONTAINER
 	--------------------------------------------------
 
-	local PageContainer = Create("Frame", {
-		Name = "Pages",
+	local PageContainer = Create(
+		"Frame",
+		{
+			Name = "Pages",
 
-		Size =
-			UDim2.new(
-				1,
-				-16,
-				1,
-				-98
-			),
+			Size =
+				UDim2.new(
+					1,
+					-16,
+					1,
+					-98
+				),
 
-		Position =
-			UDim2.fromOffset(
-				8,
-				92
-			),
+			Position =
+				UDim2.fromOffset(
+					8,
+					92
+				),
 
-		BackgroundTransparency = 1,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
 
-		BorderSizePixel = 0,
-
-		ClipsDescendants = true,
-	}, Main)
+			ClipsDescendants = true,
+		},
+		Main
+	)
 
 	Window.TabBar =
 		TabBar
@@ -731,7 +1064,7 @@ function UILibrary:CreateWindow(Options)
 		PageContainer
 
 	--------------------------------------------------
-	-- WINDOW FUNCTIONS
+	-- WINDOW API
 	--------------------------------------------------
 
 	function Window:SetTitle(NewTitle)
@@ -743,6 +1076,10 @@ function UILibrary:CreateWindow(Options)
 	end
 
 	function Window:SetVisible(Visible)
+		if self.Destroyed then
+			return
+		end
+
 		self.Visible =
 			Visible == true
 
@@ -780,50 +1117,26 @@ function UILibrary:CreateWindow(Options)
 		return Main.Position
 	end
 
-	function Window:Destroy()
-		if self.Destroyed then
-			return
-		end
-
-		self.Destroyed =
-			true
-
-		for _, Connection
-			in ipairs(
-				self.Connections
-			)
-		do
-			pcall(
-				function()
-					Connection:Disconnect()
-				end
-			)
-		end
-
-		table.clear(
-			self.Connections
-		)
-
-		ScreenGui:Destroy()
-	end
-
 	--------------------------------------------------
-	-- CLOSE / OPEN
+	-- CLOSE / REOPEN
 	--------------------------------------------------
 
-	CloseButton.MouseButton1Click:Connect(
+	Window:Connect(
+		CloseButton.MouseButton1Click,
 		function()
 			Window:Hide()
 		end
 	)
 
-	ReopenButton.MouseButton1Click:Connect(
+	Window:Connect(
+		ReopenButton.MouseButton1Click,
 		function()
 			Window:Show()
 		end
 	)
 
-	CloseButton.MouseEnter:Connect(
+	Window:Connect(
+		CloseButton.MouseEnter,
 		function()
 			Tween(
 				CloseButton,
@@ -836,7 +1149,8 @@ function UILibrary:CreateWindow(Options)
 		end
 	)
 
-	CloseButton.MouseLeave:Connect(
+	Window:Connect(
+		CloseButton.MouseLeave,
 		function()
 			Tween(
 				CloseButton,
@@ -849,7 +1163,8 @@ function UILibrary:CreateWindow(Options)
 		end
 	)
 
-	ReopenButton.MouseEnter:Connect(
+	Window:Connect(
+		ReopenButton.MouseEnter,
 		function()
 			Tween(
 				ReopenButton,
@@ -862,7 +1177,8 @@ function UILibrary:CreateWindow(Options)
 		end
 	)
 
-	ReopenButton.MouseLeave:Connect(
+	Window:Connect(
+		ReopenButton.MouseLeave,
 		function()
 			Tween(
 				ReopenButton,
@@ -892,43 +1208,43 @@ function UILibrary:CreateWindow(Options)
 
 		Tab.Sections = {}
 
-		--------------------------------------------------
-		-- TAB BUTTON
-		--------------------------------------------------
+		local TabButton = Create(
+			"TextButton",
+			{
+				Name =
+					Tab.Name
+					.. "Tab",
 
-		local TabButton = Create("TextButton", {
-			Name =
-				Tab.Name
-				.. "Tab",
-
-			Size =
-				UDim2.fromOffset(
-					math.max(
-						80,
-						(#Tab.Name * 7)
-							+ 28
+				Size =
+					UDim2.fromOffset(
+						math.max(
+							80,
+							(#Tab.Name * 7)
+								+ 28
+						),
+						34
 					),
-					34
-				),
 
-			BackgroundColor3 =
-				UILibrary.Theme.Background3,
+				BackgroundColor3 =
+					UILibrary.Theme.Background3,
 
-			BorderSizePixel = 0,
+				BorderSizePixel = 0,
 
-			Text =
-				Tab.Name,
+				Text =
+					Tab.Name,
 
-			TextColor3 =
-				UILibrary.Theme.SubText,
+				TextColor3 =
+					UILibrary.Theme.SubText,
 
-			TextSize = 12,
+				TextSize = 12,
 
-			Font =
-				Enum.Font.GothamBold,
+				Font =
+					Enum.Font.GothamBold,
 
-			AutoButtonColor = false,
-		}, TabBar)
+				AutoButtonColor = false,
+			},
+			TabBar
+		)
 
 		AddCorner(
 			TabButton,
@@ -939,33 +1255,36 @@ function UILibrary:CreateWindow(Options)
 		-- PAGE
 		--------------------------------------------------
 
-		local Page = Create("ScrollingFrame", {
-			Name =
-				Tab.Name,
+		local Page = Create(
+			"ScrollingFrame",
+			{
+				Name =
+					Tab.Name,
 
-			Size =
-				UDim2.fromScale(
-					1,
-					1
-				),
+				Size =
+					UDim2.fromScale(
+						1,
+						1
+					),
 
-			BackgroundTransparency = 1,
+				BackgroundTransparency = 1,
+				BorderSizePixel = 0,
 
-			BorderSizePixel = 0,
+				ScrollBarThickness = 4,
 
-			ScrollBarThickness = 4,
+				ScrollBarImageColor3 =
+					UILibrary.Theme.Stroke,
 
-			ScrollBarImageColor3 =
-				UILibrary.Theme.Stroke,
+				AutomaticCanvasSize =
+					Enum.AutomaticSize.Y,
 
-			AutomaticCanvasSize =
-				Enum.AutomaticSize.Y,
+				CanvasSize =
+					UDim2.new(),
 
-			CanvasSize =
-				UDim2.new(),
-
-			Visible = false,
-		}, PageContainer)
+				Visible = false,
+			},
+			PageContainer
+		)
 
 		AddPadding(
 			Page,
@@ -975,16 +1294,20 @@ function UILibrary:CreateWindow(Options)
 			10
 		)
 
-		Create("UIListLayout", {
-			Padding =
-				UDim.new(
-					0,
-					10
-				),
+		Create(
+			"UIListLayout",
+			{
+				Padding =
+					UDim.new(
+						0,
+						10
+					),
 
-			SortOrder =
-				Enum.SortOrder.LayoutOrder,
-		}, Page)
+				SortOrder =
+					Enum.SortOrder.LayoutOrder,
+			},
+			Page
+		)
 
 		Tab.Button =
 			TabButton
@@ -1002,14 +1325,17 @@ function UILibrary:CreateWindow(Options)
 		--------------------------------------------------
 
 		function Tab:Select()
+			if self.Window.Destroyed then
+				return
+			end
+
 			for _, OtherTab
 				in ipairs(
 					self.Window.Tabs
 				)
 			do
 				local Active =
-					OtherTab
-					== self
+					OtherTab == self
 
 				OtherTab.Page.Visible =
 					Active
@@ -1035,17 +1361,20 @@ function UILibrary:CreateWindow(Options)
 				self
 		end
 
-		TabButton.MouseButton1Click:Connect(
+		Window:Connect(
+			TabButton.MouseButton1Click,
 			function()
 				Tab:Select()
 			end
 		)
 
 		--------------------------------------------------
-		-- SECTION
+		-- CREATE SECTION
 		--------------------------------------------------
 
-		function Tab:CreateSection(SectionName)
+		function Tab:CreateSection(
+			SectionName
+		)
 			local Section = {}
 
 			Section.Tab =
@@ -1060,26 +1389,34 @@ function UILibrary:CreateWindow(Options)
 					or "Section"
 				)
 
-			local Frame = Create("Frame", {
-				Name =
-					Section.Name,
+			--------------------------------------------------
+			-- SECTION FRAME
+			--------------------------------------------------
 
-				Size =
-					UDim2.new(
-						1,
-						-4,
-						0,
-						0
-					),
+			local Frame = Create(
+				"Frame",
+				{
+					Name =
+						Section.Name,
 
-				BackgroundColor3 =
-					UILibrary.Theme.Background2,
+					Size =
+						UDim2.new(
+							1,
+							-4,
+							0,
+							0
+						),
 
-				BorderSizePixel = 0,
+					BackgroundColor3 =
+						UILibrary.Theme.Background2,
 
-				AutomaticSize =
-					Enum.AutomaticSize.Y,
-			}, Page)
+					BorderSizePixel = 0,
+
+					AutomaticSize =
+						Enum.AutomaticSize.Y,
+				},
+				Page
+			)
 
 			AddCorner(
 				Frame,
@@ -1098,67 +1435,103 @@ function UILibrary:CreateWindow(Options)
 				10
 			)
 
+			local FrameLayout =
+				Create(
+					"UIListLayout",
+					{
+						Padding =
+							UDim.new(
+								0,
+								6
+							),
+
+						SortOrder =
+							Enum.SortOrder.LayoutOrder,
+					},
+					Frame
+				)
+
 			--------------------------------------------------
 			-- SECTION TITLE
 			--------------------------------------------------
 
-			Create("TextLabel", {
-				Size =
-					UDim2.new(
-						1,
-						0,
-						0,
-						22
-					),
+			Create(
+				"TextLabel",
+				{
+					Name =
+						"SectionTitle",
 
-				BackgroundTransparency = 1,
+					Size =
+						UDim2.new(
+							1,
+							0,
+							0,
+							22
+						),
 
-				Text =
-					Section.Name,
+					BackgroundTransparency = 1,
 
-				TextColor3 =
-					UILibrary.Theme.Text,
+					Text =
+						Section.Name,
 
-				TextSize = 12,
+					TextColor3 =
+						UILibrary.Theme.Text,
 
-				Font =
-					Enum.Font.GothamBold,
+					TextSize = 12,
 
-				TextXAlignment =
-					Enum.TextXAlignment.Left,
-			}, Frame)
+					Font =
+						Enum.Font.GothamBold,
+
+					TextXAlignment =
+						Enum.TextXAlignment.Left,
+
+					LayoutOrder = 1,
+				},
+				Frame
+			)
 
 			--------------------------------------------------
 			-- CONTENT
 			--------------------------------------------------
 
-			local Content = Create("Frame", {
-				Name = "Content",
+			local Content = Create(
+				"Frame",
+				{
+					Name =
+						"Content",
 
-				Size =
-					UDim2.new(
-						1,
-						0,
-						0,
-						0
-					),
+					Size =
+						UDim2.new(
+							1,
+							0,
+							0,
+							0
+						),
 
-				BackgroundTransparency = 1,
+					BackgroundTransparency = 1,
 
-				AutomaticSize =
-					Enum.AutomaticSize.Y,
-			}, Frame)
+					AutomaticSize =
+						Enum.AutomaticSize.Y,
 
-			Create("UIListLayout", {
-				Padding =
-					UDim.new(
-						0,
-						6
-					),
+					LayoutOrder = 2,
+				},
+				Frame
+			)
 
-				SortOrder =
-					Enum.SortOrder.LayoutOrder,
-			}, Content)
+			Create(
+				"UIListLayout",
+				{
+					Padding =
+						UDim.new(
+							0,
+							6
+						),
+
+					SortOrder =
+						Enum.SortOrder.LayoutOrder,
+				},
+				Content
+			)
 
 			Section.Frame =
 				Frame
@@ -1175,7 +1548,9 @@ function UILibrary:CreateWindow(Options)
 			-- LABEL
 			--------------------------------------------------
 
-			function Section:AddLabel(Options)
+			function Section:AddLabel(
+				Options
+			)
 				if type(Options)
 					== "string"
 				then
@@ -1187,56 +1562,66 @@ function UILibrary:CreateWindow(Options)
 				Options =
 					Options or {}
 
-				local Label = Create("TextLabel", {
-					Size =
-						UDim2.new(
-							1,
-							0,
-							0,
-							Options.Height
-								or 26
-						),
+				local Label = Create(
+					"TextLabel",
+					{
+						Size =
+							UDim2.new(
+								1,
+								0,
+								0,
+								Options.Height
+									or 26
+							),
 
-					BackgroundTransparency = 1,
+						BackgroundTransparency = 1,
 
-					Text =
-						tostring(
-							Options.Text
-							or "Label"
-						),
+						Text =
+							tostring(
+								Options.Text
+								or "Label"
+							),
 
-					TextColor3 =
-						Options.Color
-						or UILibrary.Theme.SubText,
+						TextColor3 =
+							Options.Color
+							or UILibrary.Theme.SubText,
 
-					TextSize =
-						Options.TextSize
-						or 12,
+						TextSize =
+							Options.TextSize
+							or 12,
 
-					Font =
-						Options.Font
-						or Enum.Font.Gotham,
+						Font =
+							Options.Font
+							or Enum.Font.Gotham,
 
-					TextWrapped = true,
+						TextWrapped = true,
 
-					TextXAlignment =
-						Options.Alignment
-						or Enum.TextXAlignment.Left,
-				}, Content)
+						TextXAlignment =
+							Options.Alignment
+							or Enum.TextXAlignment.Left,
+					},
+					Content
+				)
 
 				local Controller = {}
 
-				function Controller:SetText(Text)
+				function Controller:SetText(
+					Text
+				)
 					Label.Text =
 						tostring(Text)
 				end
 
-				function Controller:SetColor(Color)
+				function Controller:SetColor(
+					Color
+				)
 					Label.TextColor3 =
 						Color
 				end
 
-				function Controller:SetVisible(Visible)
+				function Controller:SetVisible(
+					Visible
+				)
 					Label.Visible =
 						Visible == true
 				end
@@ -1252,27 +1637,33 @@ function UILibrary:CreateWindow(Options)
 			--------------------------------------------------
 
 			function Section:AddDivider()
-				return Create("Frame", {
-					Size =
-						UDim2.new(
-							1,
-							0,
-							0,
-							1
-						),
+				return Create(
+					"Frame",
+					{
+						Size =
+							UDim2.new(
+								1,
+								0,
+								0,
+								1
+							),
 
-					BackgroundColor3 =
-						UILibrary.Theme.Stroke,
+						BackgroundColor3 =
+							UILibrary.Theme.Stroke,
 
-					BorderSizePixel = 0,
-				}, Content)
+						BorderSizePixel = 0,
+					},
+					Content
+				)
 			end
 
 			--------------------------------------------------
 			-- BUTTON
 			--------------------------------------------------
 
-			function Section:AddButton(Options)
+			function Section:AddButton(
+				Options
+			)
 				if type(Options)
 					== "string"
 				then
@@ -1284,47 +1675,51 @@ function UILibrary:CreateWindow(Options)
 				Options =
 					Options or {}
 
-				local Enabled =
-					true
+				local Enabled = true
 
-				local Button = Create("TextButton", {
-					Size =
-						UDim2.new(
-							1,
-							0,
-							0,
-							Options.Height
-								or 38
-						),
+				local Button = Create(
+					"TextButton",
+					{
+						Size =
+							UDim2.new(
+								1,
+								0,
+								0,
+								Options.Height
+									or 38
+							),
 
-					BackgroundColor3 =
-						UILibrary.Theme.Button,
+						BackgroundColor3 =
+							UILibrary.Theme.Button,
 
-					BorderSizePixel = 0,
+						BorderSizePixel = 0,
 
-					Text =
-						tostring(
-							Options.Name
-							or "Button"
-						),
+						Text =
+							tostring(
+								Options.Name
+								or "Button"
+							),
 
-					TextColor3 =
-						UILibrary.Theme.Text,
+						TextColor3 =
+							UILibrary.Theme.Text,
 
-					TextSize = 12,
+						TextSize = 12,
 
-					Font =
-						Enum.Font.GothamBold,
+						Font =
+							Enum.Font.GothamBold,
 
-					AutoButtonColor = false,
-				}, Content)
+						AutoButtonColor = false,
+					},
+					Content
+				)
 
 				AddCorner(
 					Button,
 					7
 				)
 
-				Button.MouseEnter:Connect(
+				Window:Connect(
+					Button.MouseEnter,
 					function()
 						if not Enabled then
 							return
@@ -1341,7 +1736,8 @@ function UILibrary:CreateWindow(Options)
 					end
 				)
 
-				Button.MouseLeave:Connect(
+				Window:Connect(
+					Button.MouseLeave,
 					function()
 						Tween(
 							Button,
@@ -1354,7 +1750,8 @@ function UILibrary:CreateWindow(Options)
 					end
 				)
 
-				Button.MouseButton1Click:Connect(
+				Window:Connect(
+					Button.MouseButton1Click,
 					function()
 						if not Enabled then
 							return
@@ -1368,14 +1765,18 @@ function UILibrary:CreateWindow(Options)
 
 				local Controller = {}
 
-				function Controller:SetText(Text)
+				function Controller:SetText(
+					Text
+				)
 					Button.Text =
 						tostring(Text)
 				end
 
-				function Controller:SetEnabled(NewValue)
+				function Controller:SetEnabled(
+					Value
+				)
 					Enabled =
-						NewValue == true
+						Value == true
 
 					Button.Active =
 						Enabled
@@ -1396,102 +1797,117 @@ function UILibrary:CreateWindow(Options)
 			-- TOGGLE
 			--------------------------------------------------
 
-			function Section:AddToggle(Options)
+			function Section:AddToggle(
+				Options
+			)
 				Options =
 					Options or {}
 
 				local Value =
-					Options.Default == true
+					Options.Default
+					== true
 
-				local Row = Create("TextButton", {
-					Size =
-						UDim2.new(
-							1,
-							0,
-							0,
-							38
-						),
+				local Row = Create(
+					"TextButton",
+					{
+						Size =
+							UDim2.new(
+								1,
+								0,
+								0,
+								38
+							),
 
-					BackgroundColor3 =
-						UILibrary.Theme.Background3,
+						BackgroundColor3 =
+							UILibrary.Theme.Background3,
 
-					BorderSizePixel = 0,
+						BorderSizePixel = 0,
 
-					Text = "",
+						Text = "",
 
-					AutoButtonColor = false,
-				}, Content)
+						AutoButtonColor = false,
+					},
+					Content
+				)
 
 				AddCorner(
 					Row,
 					7
 				)
 
-				Create("TextLabel", {
-					Size =
-						UDim2.new(
-							1,
-							-80,
-							1,
-							0
-						),
+				Create(
+					"TextLabel",
+					{
+						Size =
+							UDim2.new(
+								1,
+								-80,
+								1,
+								0
+							),
 
-					Position =
-						UDim2.fromOffset(
-							10,
-							0
-						),
+						Position =
+							UDim2.fromOffset(
+								10,
+								0
+							),
 
-					BackgroundTransparency = 1,
+						BackgroundTransparency = 1,
 
-					Text =
-						tostring(
-							Options.Name
-							or "Toggle"
-						),
+						Text =
+							tostring(
+								Options.Name
+								or "Toggle"
+							),
 
-					TextColor3 =
-						UILibrary.Theme.Text,
+						TextColor3 =
+							UILibrary.Theme.Text,
 
-					TextSize = 12,
+						TextSize = 12,
 
-					Font =
-						Enum.Font.Gotham,
+						Font =
+							Enum.Font.Gotham,
 
-					TextXAlignment =
-						Enum.TextXAlignment.Left,
-				}, Row)
+						TextXAlignment =
+							Enum.TextXAlignment.Left,
+					},
+					Row
+				)
 
-				local State = Create("TextLabel", {
-					Size =
-						UDim2.fromOffset(
-							54,
-							26
-						),
+				local State = Create(
+					"TextLabel",
+					{
+						Size =
+							UDim2.fromOffset(
+								54,
+								26
+							),
 
-					Position =
-						UDim2.new(
-							1,
-							-62,
-							0.5,
-							-13
-						),
+						Position =
+							UDim2.new(
+								1,
+								-62,
+								0.5,
+								-13
+							),
 
-					BackgroundColor3 =
-						UILibrary.Theme.Button,
+						BackgroundColor3 =
+							UILibrary.Theme.Button,
 
-					BorderSizePixel = 0,
+						BorderSizePixel = 0,
 
-					Text = "",
+						Text = "",
 
-					TextColor3 =
-						UILibrary.Theme.Text,
+						TextColor3 =
+							UILibrary.Theme.Text,
 
-					TextSize = 10,
+						TextSize = 10,
 
-					Font =
-						Enum.Font.GothamBold,
-				}, Row)
+						Font =
+							Enum.Font.GothamBold,
+					},
+					Row
+				)
 
 				AddCorner(
 					State,
@@ -1533,7 +1949,8 @@ function UILibrary:CreateWindow(Options)
 					return Value
 				end
 
-				Row.MouseButton1Click:Connect(
+				Window:Connect(
+					Row.MouseButton1Click,
 					function()
 						Controller:Set(
 							not Value
@@ -1560,115 +1977,129 @@ function UILibrary:CreateWindow(Options)
 			-- TEXTBOX
 			--------------------------------------------------
 
-			function Section:AddTextbox(Options)
+			function Section:AddTextbox(
+				Options
+			)
 				Options =
 					Options or {}
 
-				local Row = Create("Frame", {
-					Size =
-						UDim2.new(
-							1,
-							0,
-							0,
-							66
-						),
+				local Row = Create(
+					"Frame",
+					{
+						Size =
+							UDim2.new(
+								1,
+								0,
+								0,
+								66
+							),
 
-					BackgroundColor3 =
-						UILibrary.Theme.Background3,
+						BackgroundColor3 =
+							UILibrary.Theme.Background3,
 
-					BorderSizePixel = 0,
-				}, Content)
+						BorderSizePixel = 0,
+					},
+					Content
+				)
 
 				AddCorner(
 					Row,
 					7
 				)
 
-				Create("TextLabel", {
-					Size =
-						UDim2.new(
-							1,
-							-20,
-							0,
-							24
-						),
+				Create(
+					"TextLabel",
+					{
+						Size =
+							UDim2.new(
+								1,
+								-20,
+								0,
+								24
+							),
 
-					Position =
-						UDim2.fromOffset(
-							10,
-							4
-						),
+						Position =
+							UDim2.fromOffset(
+								10,
+								4
+							),
 
-					BackgroundTransparency = 1,
+						BackgroundTransparency = 1,
 
-					Text =
-						tostring(
-							Options.Name
-							or "Textbox"
-						),
+						Text =
+							tostring(
+								Options.Name
+								or "Textbox"
+							),
 
-					TextColor3 =
-						UILibrary.Theme.SubText,
+						TextColor3 =
+							UILibrary.Theme.SubText,
 
-					TextSize = 11,
+						TextSize = 11,
 
-					Font =
-						Enum.Font.Gotham,
+						Font =
+							Enum.Font.Gotham,
 
-					TextXAlignment =
-						Enum.TextXAlignment.Left,
-				}, Row)
+						TextXAlignment =
+							Enum.TextXAlignment.Left,
+					},
+					Row
+				)
 
-				local Box = Create("TextBox", {
-					Size =
-						UDim2.new(
-							1,
-							-20,
-							0,
-							30
-						),
+				local Box = Create(
+					"TextBox",
+					{
+						Size =
+							UDim2.new(
+								1,
+								-20,
+								0,
+								30
+							),
 
-					Position =
-						UDim2.fromOffset(
-							10,
-							30
-						),
+						Position =
+							UDim2.fromOffset(
+								10,
+								30
+							),
 
-					BackgroundColor3 =
-						UILibrary.Theme.Button,
+						BackgroundColor3 =
+							UILibrary.Theme.Button,
 
-					BorderSizePixel = 0,
+						BorderSizePixel = 0,
 
-					Text =
-						tostring(
-							Options.Default
-							or ""
-						),
+						Text =
+							tostring(
+								Options.Default
+								or ""
+							),
 
-					PlaceholderText =
-						tostring(
-							Options.Placeholder
-							or "Type here..."
-						),
+						PlaceholderText =
+							tostring(
+								Options.Placeholder
+								or "Type here..."
+							),
 
-					TextColor3 =
-						UILibrary.Theme.Text,
+						TextColor3 =
+							UILibrary.Theme.Text,
 
-					PlaceholderColor3 =
-						UILibrary.Theme.DisabledText,
+						PlaceholderColor3 =
+							UILibrary.Theme.DisabledText,
 
-					TextSize = 12,
+						TextSize = 12,
 
-					Font =
-						Enum.Font.Gotham,
+						Font =
+							Enum.Font.Gotham,
 
-					ClearTextOnFocus =
-						Options.ClearOnFocus
-						== true,
+						ClearTextOnFocus =
+							Options.ClearOnFocus
+								== true,
 
-					TextXAlignment =
-						Enum.TextXAlignment.Left,
-				}, Row)
+						TextXAlignment =
+							Enum.TextXAlignment.Left,
+					},
+					Row
+				)
 
 				AddCorner(
 					Box,
@@ -1683,7 +2114,9 @@ function UILibrary:CreateWindow(Options)
 
 				local Controller = {}
 
-				function Controller:Set(Text)
+				function Controller:Set(
+					Text
+				)
 					Box.Text =
 						tostring(Text)
 				end
@@ -1692,8 +2125,11 @@ function UILibrary:CreateWindow(Options)
 					return Box.Text
 				end
 
-				Box.FocusLost:Connect(
-					function(EnterPressed)
+				Window:Connect(
+					Box.FocusLost,
+					function(
+						EnterPressed
+					)
 						SafeCallback(
 							Options.Callback,
 							Box.Text,
@@ -1702,10 +2138,14 @@ function UILibrary:CreateWindow(Options)
 					end
 				)
 
-				if Options.LiveCallback then
-					Box:GetPropertyChangedSignal(
-						"Text"
-					):Connect(
+				if type(
+					Options.LiveCallback
+				) == "function"
+				then
+					Window:Connect(
+						Box:GetPropertyChangedSignal(
+							"Text"
+						),
 						function()
 							SafeCallback(
 								Options.LiveCallback,
@@ -1728,7 +2168,9 @@ function UILibrary:CreateWindow(Options)
 			-- SLIDER
 			--------------------------------------------------
 
-			function Section:AddSlider(Options)
+			function Section:AddSlider(
+				Options
+			)
 				Options =
 					Options or {}
 
@@ -1759,139 +2201,159 @@ function UILibrary:CreateWindow(Options)
 						Increment
 					)
 
-				local Row = Create("Frame", {
-					Size =
-						UDim2.new(
-							1,
-							0,
-							0,
-							64
-						),
+				local Row = Create(
+					"Frame",
+					{
+						Size =
+							UDim2.new(
+								1,
+								0,
+								0,
+								64
+							),
 
-					BackgroundColor3 =
-						UILibrary.Theme.Background3,
+						BackgroundColor3 =
+							UILibrary.Theme.Background3,
 
-					BorderSizePixel = 0,
-				}, Content)
+						BorderSizePixel = 0,
+					},
+					Content
+				)
 
 				AddCorner(
 					Row,
 					7
 				)
 
-				Create("TextLabel", {
-					Size =
-						UDim2.new(
-							1,
-							-80,
-							0,
-							28
-						),
+				Create(
+					"TextLabel",
+					{
+						Size =
+							UDim2.new(
+								1,
+								-80,
+								0,
+								28
+							),
 
-					Position =
-						UDim2.fromOffset(
-							10,
-							2
-						),
+						Position =
+							UDim2.fromOffset(
+								10,
+								2
+							),
 
-					BackgroundTransparency = 1,
+						BackgroundTransparency = 1,
 
-					Text =
-						tostring(
-							Options.Name
-							or "Slider"
-						),
+						Text =
+							tostring(
+								Options.Name
+								or "Slider"
+							),
 
-					TextColor3 =
-						UILibrary.Theme.Text,
+						TextColor3 =
+							UILibrary.Theme.Text,
 
-					TextSize = 12,
+						TextSize = 12,
 
-					Font =
-						Enum.Font.Gotham,
+						Font =
+							Enum.Font.Gotham,
 
-					TextXAlignment =
-						Enum.TextXAlignment.Left,
-				}, Row)
+						TextXAlignment =
+							Enum.TextXAlignment.Left,
+					},
+					Row
+				)
 
-				local ValueLabel = Create("TextLabel", {
-					Size =
-						UDim2.fromOffset(
-							65,
-							28
-						),
+				local ValueLabel = Create(
+					"TextLabel",
+					{
+						Size =
+							UDim2.fromOffset(
+								65,
+								28
+							),
 
-					Position =
-						UDim2.new(
-							1,
-							-75,
-							0,
-							2
-						),
+						Position =
+							UDim2.new(
+								1,
+								-75,
+								0,
+								2
+							),
 
-					BackgroundTransparency = 1,
+						BackgroundTransparency = 1,
 
-					Text = "",
+						Text = "",
 
-					TextColor3 =
-						UILibrary.Theme.SubText,
+						TextColor3 =
+							UILibrary.Theme.SubText,
 
-					TextSize = 11,
+						TextSize = 11,
 
-					Font =
-						Enum.Font.GothamBold,
+						Font =
+							Enum.Font.GothamBold,
 
-					TextXAlignment =
-						Enum.TextXAlignment.Right,
-				}, Row)
+						TextXAlignment =
+							Enum.TextXAlignment.Right,
+					},
+					Row
+				)
 
-				local Track = Create("Frame", {
-					Size =
-						UDim2.new(
-							1,
-							-20,
-							0,
-							8
-						),
+				local Track = Create(
+					"Frame",
+					{
+						Size =
+							UDim2.new(
+								1,
+								-20,
+								0,
+								8
+							),
 
-					Position =
-						UDim2.fromOffset(
-							10,
-							42
-						),
+						Position =
+							UDim2.fromOffset(
+								10,
+								42
+							),
 
-					BackgroundColor3 =
-						UILibrary.Theme.Button,
+						BackgroundColor3 =
+							UILibrary.Theme.Button,
 
-					BorderSizePixel = 0,
+						BorderSizePixel = 0,
 
-					Active = true,
-				}, Row)
+						Active = true,
+					},
+					Row
+				)
 
 				AddCorner(
 					Track,
 					4
 				)
 
-				local Fill = Create("Frame", {
-					Size =
-						UDim2.fromScale(
-							0,
-							1
-						),
+				local Fill = Create(
+					"Frame",
+					{
+						Size =
+							UDim2.fromScale(
+								0,
+								1
+							),
 
-					BackgroundColor3 =
-						UILibrary.Theme.Accent,
+						BackgroundColor3 =
+							UILibrary.Theme.Accent,
 
-					BorderSizePixel = 0,
-				}, Track)
+						BorderSizePixel = 0,
+					},
+					Track
+				)
 
 				AddCorner(
 					Fill,
 					4
 				)
 
-				local SliderDragging =
+				local DraggingSlider =
 					false
 
 				local Controller = {}
@@ -1966,7 +2428,9 @@ function UILibrary:CreateWindow(Options)
 					return Value
 				end
 
-				local function UpdateFromInput(Input)
+				local function UpdateFromInput(
+					Input
+				)
 					local Width =
 						Track.AbsoluteSize.X
 
@@ -2000,7 +2464,8 @@ function UILibrary:CreateWindow(Options)
 					)
 				end
 
-				Track.InputBegan:Connect(
+				Window:Connect(
+					Track.InputBegan,
 					function(Input)
 						if
 							Input.UserInputType
@@ -2008,7 +2473,7 @@ function UILibrary:CreateWindow(Options)
 							or Input.UserInputType
 								== Enum.UserInputType.Touch
 						then
-							SliderDragging =
+							DraggingSlider =
 								true
 
 							UpdateFromInput(
@@ -2018,9 +2483,10 @@ function UILibrary:CreateWindow(Options)
 					end
 				)
 
-				UserInputService.InputChanged:Connect(
+				Window:Connect(
+					UserInputService.InputChanged,
 					function(Input)
-						if not SliderDragging then
+						if not DraggingSlider then
 							return
 						end
 
@@ -2037,7 +2503,8 @@ function UILibrary:CreateWindow(Options)
 					end
 				)
 
-				UserInputService.InputEnded:Connect(
+				Window:Connect(
+					UserInputService.InputEnded,
 					function(Input)
 						if
 							Input.UserInputType
@@ -2045,7 +2512,7 @@ function UILibrary:CreateWindow(Options)
 							or Input.UserInputType
 								== Enum.UserInputType.Touch
 						then
-							SliderDragging =
+							DraggingSlider =
 								false
 						end
 					end
@@ -2070,7 +2537,9 @@ function UILibrary:CreateWindow(Options)
 			-- DROPDOWN
 			--------------------------------------------------
 
-			function Section:AddDropdown(Options)
+			function Section:AddDropdown(
+				Options
+			)
 				Options =
 					Options or {}
 
@@ -2084,98 +2553,110 @@ function UILibrary:CreateWindow(Options)
 				local Open =
 					false
 
-				local Control = Create("Frame", {
-					Size =
-						UDim2.new(
-							1,
-							0,
-							0,
-							66
-						),
+				local Control = Create(
+					"Frame",
+					{
+						Size =
+							UDim2.new(
+								1,
+								0,
+								0,
+								66
+							),
 
-					BackgroundColor3 =
-						UILibrary.Theme.Background3,
+						BackgroundColor3 =
+							UILibrary.Theme.Background3,
 
-					BorderSizePixel = 0,
+						BorderSizePixel = 0,
 
-					ClipsDescendants = true,
-				}, Content)
+						ClipsDescendants = true,
+					},
+					Content
+				)
 
 				AddCorner(
 					Control,
 					7
 				)
 
-				Create("TextLabel", {
-					Size =
-						UDim2.new(
-							1,
-							-20,
-							0,
-							24
-						),
+				Create(
+					"TextLabel",
+					{
+						Size =
+							UDim2.new(
+								1,
+								-20,
+								0,
+								24
+							),
 
-					Position =
-						UDim2.fromOffset(
-							10,
-							4
-						),
+						Position =
+							UDim2.fromOffset(
+								10,
+								4
+							),
 
-					BackgroundTransparency = 1,
+						BackgroundTransparency = 1,
 
-					Text =
-						tostring(
-							Options.Name
-							or "Dropdown"
-						),
+						Text =
+							tostring(
+								Options.Name
+								or "Dropdown"
+							),
 
-					TextColor3 =
-						UILibrary.Theme.SubText,
+						TextColor3 =
+							UILibrary.Theme.SubText,
 
-					TextSize = 11,
+						TextSize = 11,
 
-					Font =
-						Enum.Font.Gotham,
+						Font =
+							Enum.Font.Gotham,
 
-					TextXAlignment =
-						Enum.TextXAlignment.Left,
-				}, Control)
+						TextXAlignment =
+							Enum.TextXAlignment.Left,
+					},
+					Control
+				)
 
-				local Selection = Create("TextButton", {
-					Size =
-						UDim2.new(
-							1,
-							-20,
-							0,
-							30
-						),
+				local Selection = Create(
+					"TextButton",
+					{
+						Size =
+							UDim2.new(
+								1,
+								-20,
+								0,
+								30
+							),
 
-					Position =
-						UDim2.fromOffset(
-							10,
-							30
-						),
+						Position =
+							UDim2.fromOffset(
+								10,
+								30
+							),
 
-					BackgroundColor3 =
-						UILibrary.Theme.Button,
+						BackgroundColor3 =
+							UILibrary.Theme.Button,
 
-					BorderSizePixel = 0,
+						BorderSizePixel = 0,
 
-					Text = "",
+						Text = "",
 
-					TextColor3 =
-						UILibrary.Theme.Text,
+						TextColor3 =
+							UILibrary.Theme.Text,
 
-					TextSize = 12,
+						TextSize = 12,
 
-					Font =
-						Enum.Font.Gotham,
+						Font =
+							Enum.Font.Gotham,
 
-					AutoButtonColor = false,
+						AutoButtonColor = false,
 
-					TextXAlignment =
-						Enum.TextXAlignment.Left,
-				}, Control)
+						TextXAlignment =
+							Enum.TextXAlignment.Left,
+					},
+					Control
+				)
 
 				AddCorner(
 					Selection,
@@ -2188,36 +2669,40 @@ function UILibrary:CreateWindow(Options)
 					8
 				)
 
-				local OptionsFrame = Create("ScrollingFrame", {
-					Size =
-						UDim2.new(
-							1,
-							-20,
-							0,
-							0
-						),
+				local OptionsFrame = Create(
+					"ScrollingFrame",
+					{
+						Size =
+							UDim2.new(
+								1,
+								-20,
+								0,
+								0
+							),
 
-					Position =
-						UDim2.fromOffset(
-							10,
-							64
-						),
+						Position =
+							UDim2.fromOffset(
+								10,
+								64
+							),
 
-					BackgroundColor3 =
-						UILibrary.Theme.Background2,
+						BackgroundColor3 =
+							UILibrary.Theme.Background2,
 
-					BorderSizePixel = 0,
+						BorderSizePixel = 0,
 
-					ScrollBarThickness = 3,
+						ScrollBarThickness = 3,
 
-					AutomaticCanvasSize =
-						Enum.AutomaticSize.Y,
+						AutomaticCanvasSize =
+							Enum.AutomaticSize.Y,
 
-					CanvasSize =
-						UDim2.new(),
+						CanvasSize =
+							UDim2.new(),
 
-					Visible = false,
-				}, Control)
+						Visible = false,
+					},
+					Control
+				)
 
 				AddCorner(
 					OptionsFrame,
@@ -2232,15 +2717,42 @@ function UILibrary:CreateWindow(Options)
 					4
 				)
 
-				Create("UIListLayout", {
-					Padding =
-						UDim.new(
-							0,
-							3
-						),
-				}, OptionsFrame)
+				Create(
+					"UIListLayout",
+					{
+						Padding =
+							UDim.new(
+								0,
+								3
+							),
+					},
+					OptionsFrame
+				)
 
+				local OptionConnections = {}
 				local Controller = {}
+
+				local function DisconnectOptions()
+					for _, Connection
+						in ipairs(
+							OptionConnections
+						)
+					do
+						pcall(function()
+							if Connection.Connected then
+								Connection:Disconnect()
+							end
+						end)
+					end
+
+					table.clear(
+						OptionConnections
+					)
+				end
+
+				Window:AddCleanup(
+					DisconnectOptions
+				)
 
 				local function UpdateText()
 					if Current ~= nil then
@@ -2257,7 +2769,9 @@ function UILibrary:CreateWindow(Options)
 					end
 				end
 
-				local function SetOpen(State)
+				local function SetOpen(
+					State
+				)
 					Open =
 						State == true
 
@@ -2267,12 +2781,8 @@ function UILibrary:CreateWindow(Options)
 					if Open then
 						local Height =
 							math.min(
-								(
-									#Values
-									* 31
-								)
-								+ 8,
-
+								(#Values * 31)
+									+ 8,
 								170
 							)
 
@@ -2290,7 +2800,7 @@ function UILibrary:CreateWindow(Options)
 								0,
 								0,
 								68
-								+ Height
+									+ Height
 							)
 					else
 						OptionsFrame.Size =
@@ -2312,6 +2822,8 @@ function UILibrary:CreateWindow(Options)
 				end
 
 				local function Rebuild()
+					DisconnectOptions()
+
 					for _, Child
 						in ipairs(
 							OptionsFrame:GetChildren()
@@ -2332,51 +2844,64 @@ function UILibrary:CreateWindow(Options)
 						local ValueCopy =
 							DropdownValue
 
-						local OptionButton = Create("TextButton", {
-							Size =
-								UDim2.new(
-									1,
-									0,
-									0,
-									28
-								),
+						local OptionButton =
+							Create(
+								"TextButton",
+								{
+									Size =
+										UDim2.new(
+											1,
+											0,
+											0,
+											28
+										),
 
-							BackgroundColor3 =
-								UILibrary.Theme.Button,
+									BackgroundColor3 =
+										UILibrary.Theme.Button,
 
-							BorderSizePixel = 0,
+									BorderSizePixel = 0,
 
-							Text =
-								tostring(
-									ValueCopy
-								),
+									Text =
+										tostring(
+											ValueCopy
+										),
 
-							TextColor3 =
-								UILibrary.Theme.Text,
+									TextColor3 =
+										UILibrary.Theme.Text,
 
-							TextSize = 11,
+									TextSize = 11,
 
-							Font =
-								Enum.Font.Gotham,
+									Font =
+										Enum.Font.Gotham,
 
-							AutoButtonColor = false,
-						}, OptionsFrame)
+									AutoButtonColor = false,
+								},
+								OptionsFrame
+							)
 
 						AddCorner(
 							OptionButton,
 							5
 						)
 
-						OptionButton.MouseButton1Click:Connect(
-							function()
-								Controller:Set(
-									ValueCopy
+						local Connection =
+							OptionButton
+								.MouseButton1Click
+								:Connect(
+									function()
+										Controller:Set(
+											ValueCopy
+										)
+
+										SetOpen(
+											false
+										)
+									end
 								)
 
-								SetOpen(
-									false
-								)
-							end
+						table.insert(
+							OptionConnections,
+							Connection
 						)
 					end
 				end
@@ -2402,7 +2927,9 @@ function UILibrary:CreateWindow(Options)
 					return Current
 				end
 
-				function Controller:SetValues(NewValues)
+				function Controller:SetValues(
+					NewValues
+				)
 					Values =
 						NewValues
 						or {}
@@ -2410,13 +2937,8 @@ function UILibrary:CreateWindow(Options)
 					Rebuild()
 
 					if Open then
-						SetOpen(
-							false
-						)
-
-						SetOpen(
-							true
-						)
+						SetOpen(false)
+						SetOpen(true)
 					end
 				end
 
@@ -2425,18 +2947,15 @@ function UILibrary:CreateWindow(Options)
 				end
 
 				function Controller:Open()
-					SetOpen(
-						true
-					)
+					SetOpen(true)
 				end
 
 				function Controller:Close()
-					SetOpen(
-						false
-					)
+					SetOpen(false)
 				end
 
-				Selection.MouseButton1Click:Connect(
+				Window:Connect(
+					Selection.MouseButton1Click,
 					function()
 						SetOpen(
 							not Open
@@ -2457,13 +2976,15 @@ function UILibrary:CreateWindow(Options)
 			-- TARGET SELECTOR
 			--------------------------------------------------
 
-			function Section:AddTargetSelector(Options)
+			function Section:AddTargetSelector(
+				Options
+			)
 				Options =
 					Options or {}
 
 				local IncludeLocalPlayer =
 					Options.IncludeLocalPlayer
-					== true
+						== true
 
 				local function GetPlayerNames()
 					local Names = {}
@@ -2513,7 +3034,9 @@ function UILibrary:CreateWindow(Options)
 							function(Name)
 								local Player =
 									Players:FindFirstChild(
-										tostring(Name)
+										tostring(
+											Name
+										)
 									)
 
 								SafeCallback(
@@ -2540,11 +3063,15 @@ function UILibrary:CreateWindow(Options)
 					end
 
 					return Players:FindFirstChild(
-						tostring(Name)
+						tostring(
+							Name
+						)
 					)
 				end
 
-				function Controller:Set(PlayerOrName)
+				function Controller:Set(
+					PlayerOrName
+				)
 					if PlayerOrName == nil then
 						Dropdown:Set(
 							nil,
@@ -2556,8 +3083,9 @@ function UILibrary:CreateWindow(Options)
 
 					local Name
 
-					if typeof(PlayerOrName)
-						== "Instance"
+					if typeof(
+						PlayerOrName
+					) == "Instance"
 					then
 						Name =
 							PlayerOrName.Name
@@ -2573,37 +3101,27 @@ function UILibrary:CreateWindow(Options)
 					)
 				end
 
-				local AddedConnection =
-					Players.PlayerAdded:Connect(
-						function()
-							Controller:Refresh()
-						end
-					)
-
-				local RemovingConnection =
-					Players.PlayerRemoving:Connect(
-						function(Player)
-							if Dropdown:Get()
-								== Player.Name
-							then
-								Dropdown:Set(
-									nil,
-									false
-								)
-							end
-
-							Controller:Refresh()
-						end
-					)
-
-				table.insert(
-					Window.Connections,
-					AddedConnection
+				Window:Connect(
+					Players.PlayerAdded,
+					function()
+						Controller:Refresh()
+					end
 				)
 
-				table.insert(
-					Window.Connections,
-					RemovingConnection
+				Window:Connect(
+					Players.PlayerRemoving,
+					function(Player)
+						if Dropdown:Get()
+							== Player.Name
+						then
+							Dropdown:Set(
+								nil,
+								false
+							)
+						end
+
+						Controller:Refresh()
+					end
 				)
 
 				Controller.Dropdown =
@@ -2616,32 +3134,41 @@ function UILibrary:CreateWindow(Options)
 			-- CUSTOM CONTAINER
 			--------------------------------------------------
 
-			function Section:AddCustom(Options)
+			function Section:AddCustom(
+				Options
+			)
 				Options =
 					Options or {}
 
-				local Container = Create("Frame", {
-					Size =
-						UDim2.new(
-							1,
-							0,
-							0,
-							Options.Height
-								or 40
-						),
+				local Container =
+					Create(
+						"Frame",
+						{
+							Size =
+								UDim2.new(
+									1,
+									0,
+									0,
+									Options.Height
+										or 40
+								),
 
-					BackgroundColor3 =
-						Options.BackgroundColor
-						or UILibrary.Theme.Background3,
+							BackgroundColor3 =
+								Options.BackgroundColor
+								or UILibrary.Theme.Background3,
 
-					BackgroundTransparency =
-						Options.BackgroundTransparency
-						or 0,
+							BackgroundTransparency =
+								Options.BackgroundTransparency
+								or 0,
 
-					BorderSizePixel = 0,
-				}, Content)
+							BorderSizePixel = 0,
+						},
+						Content
+					)
 
-				if Options.Corner ~= false then
+				if Options.Corner
+					~= false
+				then
 					AddCorner(
 						Container,
 						Options.CornerRadius
@@ -2670,10 +3197,13 @@ function UILibrary:CreateWindow(Options)
 			end
 
 			--------------------------------------------------
-			-- REGISTERED CUSTOM WIDGET
+			-- CUSTOM WIDGET
 			--------------------------------------------------
 
-			function Section:AddWidget(Name, Options)
+			function Section:AddWidget(
+				Name,
+				Options
+			)
 				local Constructor =
 					UILibrary.CustomWidgets[
 						Name
@@ -2687,8 +3217,7 @@ function UILibrary:CreateWindow(Options)
 
 				return Constructor(
 					self,
-					Options
-						or {}
+					Options or {}
 				)
 			end
 
@@ -2699,14 +3228,16 @@ function UILibrary:CreateWindow(Options)
 		-- TARGET SECTION
 		--------------------------------------------------
 
-		function Tab:CreateTargetSection(Options)
+		function Tab:CreateTargetSection(
+			Options
+		)
 			Options =
 				Options or {}
 
 			local Section =
 				self:CreateSection(
 					Options.Name
-						or "Target"
+					or "Target"
 				)
 
 			Section.TargetSelector =
@@ -2726,10 +3257,10 @@ function UILibrary:CreateWindow(Options)
 		end
 
 		--------------------------------------------------
-		-- AUTO SELECT FIRST TAB
+		-- FIRST TAB
 		--------------------------------------------------
 
-		if self.ActiveTab == nil then
+		if Window.ActiveTab == nil then
 			Tab:Select()
 		end
 
