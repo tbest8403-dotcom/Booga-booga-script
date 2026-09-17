@@ -1,0 +1,148 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local UILibrary = require(
+	ReplicatedStorage:WaitForChild("UILibrary")
+)
+
+local Window = UILibrary:CreateWindow({
+	Title = "Game Helper",
+	Size = Vector2.new(560, 580),
+	ReopenText = "Open UI",
+})
+
+--------------------------------------------------
+-- MAIN TAB
+--------------------------------------------------
+
+local MainTab = Window:CreateTab("Main")
+
+local Automation =
+	MainTab:CreateSection("Automation")
+
+Automation:AddToggle({
+	Name = "Auto Harvest",
+	Default = false,
+
+	Callback = function(Value)
+		print("Auto Harvest:", Value)
+	end,
+})
+
+Automation:AddSlider({
+	Name = "Harvest Range",
+
+	Min = 1,
+	Max = 25,
+	Default = 20,
+	Increment = 1,
+
+	Callback = function(Value)
+		print("Range:", Value)
+	end,
+})
+
+Automation:AddButton({
+	Name = "Collect Nearby",
+
+	Callback = function()
+		print("Collect")
+	end,
+})
+
+--------------------------------------------------
+-- FILTER
+--------------------------------------------------
+
+local Filter =
+	MainTab:CreateSection("Pickup Filter")
+
+Filter:AddTextbox({
+	Name = "Search",
+	Placeholder = "Search item or type...",
+
+	LiveCallback = function(Text)
+		print("Searching:", Text)
+	end,
+})
+
+Filter:AddDropdown({
+	Name = "Item Type",
+
+	Values = {
+		"food",
+		"tool",
+		"armor",
+		"object",
+	},
+
+	Callback = function(Value)
+		print("Selected type:", Value)
+	end,
+})
+
+--------------------------------------------------
+-- TARGET TAB
+--------------------------------------------------
+
+local TargetTab =
+	Window:CreateTab("Target")
+
+local TargetSection =
+	TargetTab:CreateTargetSection({
+		Name = "Target",
+
+		Callback = function(Player)
+			if Player then
+				print(
+					"Target:",
+					Player.Name
+				)
+			end
+		end,
+	})
+
+TargetSection:AddToggle({
+	Name = "Auto Target",
+
+	Callback = function(Value)
+		print("Auto Target:", Value)
+	end,
+})
+
+TargetSection:AddSlider({
+	Name = "Target Range",
+
+	Min = 10,
+	Max = 500,
+	Default = 100,
+
+	Callback = function(Value)
+		print("Target range:", Value)
+	end,
+})
+
+--------------------------------------------------
+-- SETTINGS
+--------------------------------------------------
+
+local Settings =
+	Window:CreateTab("Settings")
+
+local UI =
+	Settings:CreateSection("UI")
+
+UI:AddButton({
+	Name = "Hide Window",
+
+	Callback = function()
+		Window:SetVisible(false)
+	end,
+})
+
+UI:AddButton({
+	Name = "Destroy UI",
+
+	Callback = function()
+		Window:Destroy()
+	end,
+})
