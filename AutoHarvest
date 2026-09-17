@@ -1,0 +1,153 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+local Packets = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Packets"))
+local Pickup = require(ReplicatedStorage:WaitForChild("Game"):WaitForChild("pickup"))
+
+local AutoHarvest = {
+    Config = {
+        Enabled = false,
+        Range = 20,
+        MaxRange = 25,
+        ScanInterval = 0.08,
+        RequestCooldown = 0.35,
+        MaxRequestsPerScan = 8,
+    },
+    Pending = {},
+}
+
+local function GetCharacter()
+    local Character = LocalPlayer.Character
+    if not Character then return nil end
+    local Humanoid = Character:FindFirstChildOfClass("Humanoid")
+    if not Humanoid or Humanoid.Health <= 0 then return nil end
+    return Character
+end
+
+local function GetPosition(Object)
+    if Object:IsA("BasePart") then return Object.Position end
+    if Object:IsA("Model") then return Object:GetPivot().Position end
+    local Part = Object:FindFirstChildWhichIsA("BasePart", true)
+    return Part and Part.Position or nil
+end
+
+function AutoHarvest:Init(Context)
+    if self.Initialized then return self end
+    self.Initialized = true
+    self.Filter = Context and Context.Filter or nil
+    self:Start()
+    return self
+end
+
+function AutoHarvest:IsAllowed(Item)
+    return not self.Filter or self.Filter:Matches(Item)
+end
+
+function AutoHarvest:RequestPickup(Item)
+    if not Item or not Item.Parent or not self:IsAllowed(Item) then return false end
+    local EntityID = Item:GetAttribute("EntityID")
+    if EntityID == nil then return false end
+
+    local Character = GetCharacter()
+    local Position = GetPosition(Item)
+    if not Character or not Position then return false end
+    if (Character:GetPivot().Position - Position).Magnitude > self.Config.Range then return false end
+
+    local Now = os.clock()
+    if self.Pending[Item] and Now - self.Pending[Item] < self.Config.RequestCooldown then return false end
+
+    local Success, Allowed = pcall(function() return Pickup.Try(Item) end)
+    if not Success or not Allowed then return false end
+
+    self.Pending[Item] = Now
+    Packets.Pickup.send(EntityID)
+    return true
+end
+
+function AutoHarvest:Scan()
+    if not self.Config.Enabled then return end
+    local Character = GetCharacter()
+    if not Character then return end
+
+    local Origin = Character:GetPivot().Position
+    local Nearby = {}
+
+    for _, Item in ipairs(CollectionService:GetTagged("Pickup")) do
+        if Item and Item.Parent and self:IsAllowed(Item) then
+            local Position = GetPosition(Item)
+            if Position then
+                local Distance = (Origin - Position).Magnitude
+                if Distance <= self.Config.Range then
+                    table.insert(Nearby, { Item = Item, Distance = Distance })
+                end
+            end
+        end
+    end
+
+    table.sort(Nearby, function(A, B) return A.Distance < B.Distance end)
+
+    local Sent = 0
+    for _, Entry in ipairs(Nearby) do
+        if Sent >= self.Config.MaxRequestsPerScan then break end
+        if self:RequestPickup(Entry.Item) then Sent += 1 end
+    end
+
+    local Now = os.clock()
+    for Item, Time in pairs(self.Pending) do
+        if not Item.Parent or Now - Time > 2 then self.Pending[Item] = nil end
+    end
+end
+
+function AutoHarvest:Start()
+    if self.Connection then return end
+    self.Accumulator = 0
+    self.Connection = RunService.Heartbeat:Connect(function(DeltaTime)
+        self.Accumulator += DeltaTime
+        if self.Accumulator < self.Config.ScanInterval then return end
+        self.Accumulator = 0
+        self:Scan()
+    end)
+end
+
+function AutoHarvest:Stop()
+    if self.Connection then self.Connection:Disconnect() self.Connection = nil end
+end
+
+function AutoHarvest:CreateUI(Section)
+    local Controls = {}
+    Controls.Enabled = Section:AddToggle({
+        Name = "Auto Harvest",
+        Default = self.Config.Enabled,
+        Callback = function(Value) self.Config.Enabled = Value end,
+    })
+    Controls.Range = Section:AddSlider({
+        Name = "Pickup Range", Min = 1, Max = self.Config.MaxRange,
+        Default = self.Config.Range, Increment = 1,
+        Callback = function(Value) self.Config.Range = Value end,
+    })
+    Controls.Interval = Section:AddSlider({
+        Name = "Scan Interval", Min = 0.03, Max = 0.5,
+        Default = self.Config.ScanInterval, Increment = 0.01,
+        Callback = function(Value) self.Config.ScanInterval = Value end,
+    })
+    Controls.PerScan = Section:AddSlider({
+        Name = "Requests Per Scan", Min = 1, Max = 20,
+        Default = self.Config.MaxRequestsPerScan, Increment = 1,
+        Callback = function(Value) self.Config.MaxRequestsPerScan = Value end,
+    })
+    Section:AddButton({
+        Name = "Scan Once",
+        Callback = function()
+            local Old = self.Config.Enabled
+            self.Config.Enabled = true
+            self:Scan()
+            self.Config.Enabled = Old
+        end,
+    })
+    return Controls
+end
+
+return AutoHarvest
