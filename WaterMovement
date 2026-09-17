@@ -1,0 +1,463 @@
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+
+local WaterMovement = {}
+
+WaterMovement.Config = {
+	Enabled = true,
+
+	-- 1 = no additional swimming slowdown.
+	SwimSpeedMultiplier = 1,
+
+	-- Allows normal jump-style impulses underwater.
+	UnderwaterJump = true,
+
+	-- Prevent holding Jump from firing every frame.
+	JumpCooldown = 0.15,
+}
+
+WaterMovement._connections = {}
+WaterMovement._characterConnections = {}
+
+WaterMovement._character = nil
+WaterMovement._humanoid = nil
+WaterMovement._rootPart = nil
+WaterMovement._swimController = nil
+
+WaterMovement._originalSwimFactor = nil
+WaterMovement._lastJump = 0
+
+WaterMovement._running = false
+
+--------------------------------------------------
+-- CONNECTION HELPERS
+--------------------------------------------------
+
+local function DisconnectList(List)
+	for _, Connection in ipairs(List) do
+		pcall(function()
+			if Connection.Connected then
+				Connection:Disconnect()
+			end
+		end)
+	end
+
+	table.clear(List)
+end
+
+function WaterMovement:_Connect(Signal, Callback)
+	local Connection =
+		Signal:Connect(Callback)
+
+	table.insert(
+		self._connections,
+		Connection
+	)
+
+	return Connection
+end
+
+function WaterMovement:_ConnectCharacter(
+	Signal,
+	Callback
+)
+	local Connection =
+		Signal:Connect(Callback)
+
+	table.insert(
+		self._characterConnections,
+		Connection
+	)
+
+	return Connection
+end
+
+--------------------------------------------------
+-- STATE
+--------------------------------------------------
+
+function WaterMovement:IsSwimming()
+	local Humanoid =
+		self._humanoid
+
+	if not Humanoid then
+		return false
+	end
+
+	return Humanoid:GetState()
+		== Enum.HumanoidStateType.Swimming
+end
+
+--------------------------------------------------
+-- FIND SWIM CONTROLLER
+--------------------------------------------------
+
+function WaterMovement:_FindSwimController(
+	Character
+)
+	if not Character then
+		return nil
+	end
+
+	return Character:FindFirstChildWhichIsA(
+		"SwimController",
+		true
+	)
+end
+
+--------------------------------------------------
+-- JUMP SPEED
+--------------------------------------------------
+
+function WaterMovement:GetNormalJumpSpeed()
+	local Humanoid =
+		self._humanoid
+
+	if not Humanoid then
+		return 0
+	end
+
+	if Humanoid.UseJumpPower then
+		return Humanoid.JumpPower
+	end
+
+	return math.sqrt(
+		2
+		* Workspace.Gravity
+		* Humanoid.JumpHeight
+	)
+end
+
+--------------------------------------------------
+-- UNDERWATER JUMP
+--------------------------------------------------
+
+function WaterMovement:Jump()
+	if not self.Config.Enabled then
+		return
+	end
+
+	if not self.Config.UnderwaterJump then
+		return
+	end
+
+	if not self:IsSwimming() then
+		return
+	end
+
+	local RootPart =
+		self._rootPart
+
+	if not RootPart then
+		return
+	end
+
+	local Now =
+		time()
+
+	if Now - self._lastJump
+		< self.Config.JumpCooldown
+	then
+		return
+	end
+
+	self._lastJump =
+		Now
+
+	local JumpSpeed =
+		self:GetNormalJumpSpeed()
+
+	if JumpSpeed <= 0 then
+		return
+	end
+
+	local CurrentVelocity =
+		RootPart.AssemblyLinearVelocity
+
+	local CurrentY =
+		CurrentVelocity.Y
+
+	local NeededVelocity =
+		JumpSpeed - CurrentY
+
+	if NeededVelocity <= 0 then
+		return
+	end
+
+	local Impulse =
+		Vector3.new(
+			0,
+			NeededVelocity
+				* RootPart.AssemblyMass,
+			0
+		)
+
+	RootPart:ApplyImpulse(
+		Impulse
+	)
+end
+
+--------------------------------------------------
+-- SWIM SPEED
+--------------------------------------------------
+
+function WaterMovement:_ApplySwimSpeed()
+	if not self.Config.Enabled then
+		return
+	end
+
+	local SwimController =
+		self._swimController
+
+	if not SwimController then
+		return
+	end
+
+	if self._originalSwimFactor == nil then
+		self._originalSwimFactor =
+			SwimController.MoveSpeedFactor
+	end
+
+	SwimController.MoveSpeedFactor =
+		self._originalSwimFactor
+		* self.Config.SwimSpeedMultiplier
+end
+
+function WaterMovement:_RestoreSwimSpeed()
+	local SwimController =
+		self._swimController
+
+	if SwimController
+		and self._originalSwimFactor ~= nil
+	then
+		SwimController.MoveSpeedFactor =
+			self._originalSwimFactor
+	end
+end
+
+--------------------------------------------------
+-- CHARACTER
+--------------------------------------------------
+
+function WaterMovement:_DetachCharacter()
+	DisconnectList(
+		self._characterConnections
+	)
+
+	self:_RestoreSwimSpeed()
+
+	self._character = nil
+	self._humanoid = nil
+	self._rootPart = nil
+	self._swimController = nil
+
+	self._originalSwimFactor = nil
+	self._lastJump = 0
+end
+
+function WaterMovement:_AttachCharacter(
+	Character
+)
+	self:_DetachCharacter()
+
+	if not Character then
+		return
+	end
+
+	local Humanoid =
+		Character:WaitForChild(
+			"Humanoid"
+		)
+
+	local RootPart =
+		Character:WaitForChild(
+			"HumanoidRootPart"
+		)
+
+	self._character =
+		Character
+
+	self._humanoid =
+		Humanoid
+
+	self._rootPart =
+		RootPart
+
+	self._swimController =
+		self:_FindSwimController(
+			Character
+		)
+
+	--------------------------------------------------
+	-- CONTROLLER MAY APPEAR LATER
+	--------------------------------------------------
+
+	self:_ConnectCharacter(
+		Character.DescendantAdded,
+		function(Object)
+			if self._swimController then
+				return
+			end
+
+			if Object:IsA(
+				"SwimController"
+			) then
+				self._swimController =
+					Object
+
+				self._originalSwimFactor =
+					Object.MoveSpeedFactor
+
+				if self:IsSwimming() then
+					self:_ApplySwimSpeed()
+				end
+			end
+		end
+	)
+
+	--------------------------------------------------
+	-- STATE CHANGES
+	--------------------------------------------------
+
+	self:_ConnectCharacter(
+		Humanoid.StateChanged,
+		function(_, NewState)
+			if NewState
+				== Enum.HumanoidStateType.Swimming
+			then
+				self:_ApplySwimSpeed()
+			else
+				self:_RestoreSwimSpeed()
+			end
+		end
+	)
+
+	--------------------------------------------------
+	-- JUMP INPUT
+	--------------------------------------------------
+
+	self:_ConnectCharacter(
+		Humanoid:GetPropertyChangedSignal(
+			"Jump"
+		),
+		function()
+			if Humanoid.Jump then
+				self:Jump()
+			end
+		end
+	)
+
+	--------------------------------------------------
+	-- APPLY IMMEDIATELY
+	--------------------------------------------------
+
+	if self:IsSwimming() then
+		self:_ApplySwimSpeed()
+	end
+end
+
+--------------------------------------------------
+-- CONFIG
+--------------------------------------------------
+
+function WaterMovement:SetEnabled(
+	Enabled
+)
+	self.Config.Enabled =
+		Enabled == true
+
+	if self.Config.Enabled then
+		if self:IsSwimming() then
+			self:_ApplySwimSpeed()
+		end
+	else
+		self:_RestoreSwimSpeed()
+	end
+end
+
+function WaterMovement:SetSpeedMultiplier(
+	Multiplier
+)
+	Multiplier =
+		tonumber(Multiplier)
+		or 1
+
+	self.Config.SwimSpeedMultiplier =
+		math.max(
+			0,
+			Multiplier
+		)
+
+	if self:IsSwimming() then
+		self:_ApplySwimSpeed()
+	end
+end
+
+function WaterMovement:SetUnderwaterJump(
+	Enabled
+)
+	self.Config.UnderwaterJump =
+		Enabled == true
+end
+
+--------------------------------------------------
+-- START
+--------------------------------------------------
+
+function WaterMovement:Start()
+	if self._running then
+		return self
+	end
+
+	self._running =
+		true
+
+	local Player =
+		Players.LocalPlayer
+
+	if Player.Character then
+		self:_AttachCharacter(
+			Player.Character
+		)
+	end
+
+	self:_Connect(
+		Player.CharacterAdded,
+		function(Character)
+			self:_AttachCharacter(
+				Character
+			)
+		end
+	)
+
+	return self
+end
+
+--------------------------------------------------
+-- STOP
+--------------------------------------------------
+
+function WaterMovement:Stop()
+	if not self._running then
+		return
+	end
+
+	self._running =
+		false
+
+	self:_DetachCharacter()
+
+	DisconnectList(
+		self._connections
+	)
+end
+
+--------------------------------------------------
+-- DESTROY
+--------------------------------------------------
+
+function WaterMovement:Destroy()
+	self:Stop()
+end
+
+return WaterMovement
